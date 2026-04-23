@@ -3,13 +3,13 @@ import type { AppConfig } from '../config.js';
 import { AuthenticationError } from '../http/errors.js';
 import { createRequestId, sendOpenAiError } from '../http/openaiResponses.js';
 
-function isPublicPath(pathname: string): boolean {
-  return pathname.startsWith('/files/');
+function isPublicRoute(request: FastifyRequest): boolean {
+  return request.routeOptions.url === '/files/*';
 }
 
 export function createAuthPreHandler(config: AppConfig) {
   return async function authPreHandler(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    if (request.method === 'OPTIONS' || isPublicPath(request.url)) {
+    if (request.method === 'OPTIONS' || isPublicRoute(request)) {
       return;
     }
 

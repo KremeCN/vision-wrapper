@@ -1,10 +1,15 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppConfig } from '../config.js';
-import { BadRequestError, HttpError } from '../http/errors.js';
+import { BadRequestError, HttpError, UpstreamError } from '../http/errors.js';
 import { createRequestId, sendOpenAiError } from '../http/openaiResponses.js';
 import type { OpenAiClient } from '../openai/client.js';
 
 type SupportedImageOperation = 'generations' | 'edits';
+
+type MultipartPart = {
+  headers: Record<string, string>;
+  body: Buffer;
+};
 
 function isSupportedOperation(operation: string): operation is SupportedImageOperation {
   return operation === 'generations' || operation === 'edits';
@@ -36,23 +41,117 @@ function validateModelAlias(body: unknown, expectedModel: string): HttpError | n
 }
 
 function parseMultipartBoundary(contentType: string): string | null {
-  const match = contentType.match(/boundary=(.+)$/i);
-  return match?.[1]?.trim() ?? null;
+  for (const segment of contentType.split(';').slice(1)) {
+    const [rawKey, ...rawValueParts] = segment.split('=');
+    if (!rawKey || rawValueParts.length === 0) {
+      continue;
+    }
+
+    if (rawKey.trim().toLowerCase() !== 'boundary') {
+      continue;
+    }
+
+    const rawValue = rawValueParts.join('=').trim();
+    const unquoted = rawValue.startsWith('"') && rawValue.endsWith('"')
+      ? rawValue.slice(1, -1)
+      : rawValue;
+    return unquoted || null;
+  }
+
+  return null;
 }
 
 function parseMultipartModel(rawBody: Buffer, boundary: string): string | null {
-  const content = rawBody.toString('latin1');
-  const parts = content.split(`--${boundary}`);
+  const parts = parseMultipartParts(rawBody, boundary);
   for (const part of parts) {
-    if (!part.includes('name="model"')) {
+    const disposition = part.headers['content-disposition'];
+    if (!disposition || parseContentDispositionName(disposition) !== 'model') {
       continue;
     }
-    const contentSplit = part.split('\r\n\r\n');
-    if (contentSplit.length < 2) {
-      continue;
-    }
-    return contentSplit[1]?.replace(/\r\n--?$/, '').trim() ?? null;
+
+    return part.body.toString('utf8').trim() || null;
   }
+
+  return null;
+}
+
+function parseMultipartParts(rawBody: Buffer, boundary: string): MultipartPart[] {
+  const boundaryBuffer = Buffer.from(`--${boundary}`);
+  const delimiterBuffer = Buffer.from(`\r\n--${boundary}`);
+  const headerSeparatorBuffer = Buffer.from('\r\n\r\n');
+  const closingSuffixBuffer = Buffer.from('--');
+  const parts: MultipartPart[] = [];
+
+  let cursor = 0;
+  if (!rawBody.subarray(0, boundaryBuffer.length).equals(boundaryBuffer)) {
+    return parts;
+  }
+  cursor = boundaryBuffer.length;
+
+  while (cursor < rawBody.length) {
+    if (rawBody.subarray(cursor, cursor + 2).equals(closingSuffixBuffer)) {
+      break;
+    }
+
+    if (rawBody.subarray(cursor, cursor + 2).equals(Buffer.from('\r\n'))) {
+      cursor += 2;
+    }
+
+    const headerEnd = rawBody.indexOf(headerSeparatorBuffer, cursor);
+    if (headerEnd === -1) {
+      break;
+    }
+
+    const headers = parsePartHeaders(rawBody.subarray(cursor, headerEnd).toString('utf8'));
+    const bodyStart = headerEnd + headerSeparatorBuffer.length;
+    const nextDelimiter = rawBody.indexOf(delimiterBuffer, bodyStart);
+    if (nextDelimiter === -1) {
+      break;
+    }
+
+    const body = rawBody.subarray(bodyStart, nextDelimiter);
+    parts.push({ headers, body });
+    cursor = nextDelimiter + delimiterBuffer.length;
+  }
+
+  return parts;
+}
+
+function parsePartHeaders(rawHeaders: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const line of rawHeaders.split('\r\n')) {
+    const separator = line.indexOf(':');
+    if (separator === -1) {
+      continue;
+    }
+
+    const key = line.slice(0, separator).trim().toLowerCase();
+    const value = line.slice(separator + 1).trim();
+    if (key) {
+      headers[key] = value;
+    }
+  }
+  return headers;
+}
+
+function parseContentDispositionName(disposition: string): string | null {
+  for (const segment of disposition.split(';').slice(1)) {
+    const [rawKey, ...rawValueParts] = segment.split('=');
+    if (!rawKey || rawValueParts.length === 0) {
+      continue;
+    }
+
+    if (rawKey.trim().toLowerCase() !== 'name') {
+      continue;
+    }
+
+    const rawValue = rawValueParts.join('=').trim();
+    const unquoted = rawValue.startsWith('"') && rawValue.endsWith('"')
+      ? rawValue.slice(1, -1)
+      : rawValue;
+    return unquoted || null;
+  }
+
   return null;
 }
 
@@ -129,5 +228,18 @@ function mapToHttpError(error: unknown): HttpError {
   }
 
   const message = error instanceof Error ? error.message : 'Unexpected error';
-  return new BadRequestError(message, 'upstream_forward_error');
+
+  if (message.includes('timed out')) {
+    return new UpstreamError(504, message, 'upstream_timeout');
+  }
+
+  if (message.includes('fetch failed') || message.includes('network') || message.includes('socket') || message.includes('ECONN')) {
+    return new UpstreamError(502, message, 'upstream_network_error');
+  }
+
+  if (message.includes('Upstream')) {
+    return new UpstreamError(502, message, 'upstream_error');
+  }
+
+  return new UpstreamError(502, message, 'upstream_forward_error');
 }

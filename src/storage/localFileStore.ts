@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { lookup as lookupMime } from 'mime-types';
+import { assertSafeUpstreamImageUrl } from '../security/safeExternalUrl.js';
 import { createFileId } from '../utils/id.js';
 import { createPromptDigest, type FileMetadataStore } from './fileMetadataStore.js';
 
@@ -26,7 +27,8 @@ export class LocalFileStore {
   }
 
   async saveRemoteImage(imageUrl: string, context?: { model: string; prompt: string }): Promise<StoredImage> {
-    const response = await fetch(imageUrl);
+    const safeUrl = await assertSafeUpstreamImageUrl(imageUrl);
+    const response = await fetch(safeUrl);
     if (!response.ok) {
       throw new Error(`Failed to download upstream image: ${response.status}`);
     }

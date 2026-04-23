@@ -1,11 +1,11 @@
 import rateLimit from '@fastify/rate-limit';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { AppConfig } from '../config.js';
 import { RateLimitError } from '../http/errors.js';
 import { buildOpenAiErrorBody } from '../http/openaiResponses.js';
 
-function isPublicPath(pathname: string): boolean {
-  return pathname.startsWith('/files/');
+function isPublicRoute(request: FastifyRequest): boolean {
+  return request.routeOptions.url === '/files/*';
 }
 
 export async function registerRateLimit(app: FastifyInstance, config: AppConfig): Promise<void> {
@@ -17,7 +17,7 @@ export async function registerRateLimit(app: FastifyInstance, config: AppConfig)
       return auth || request.ip;
     },
     allowList(request) {
-      return isPublicPath(request.url);
+      return isPublicRoute(request);
     },
     errorResponseBuilder() {
       return buildOpenAiErrorBody(new RateLimitError());

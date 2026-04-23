@@ -110,48 +110,15 @@ describe('HTTP routes', () => {
     await app.close();
   });
 
-  it('allows public file access without auth', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: { get: () => 'application/json; charset=utf-8' },
-      json: async () => ({
-        data: [{ b64_json: Buffer.from('image-bytes').toString('base64') }]
-      }),
-      text: async () => ''
-    }));
 
+  it('does not treat encoded file path prefix as public route', async () => {
     const app = await buildApp(await createConfig());
-    const completion = await app.inject({
-      method: 'POST',
-      url: '/v1/chat/completions',
-      headers: {
-        authorization: 'Bearer test-token',
-        'content-type': 'application/json'
-      },
-      payload: {
-        model: 'gpt-image-2',
-        messages: [{ role: 'user', content: 'draw a cat' }],
-        temperature: 0.5,
-        metadata: { source: 'test' }
-      }
-    });
-
-    expect(completion.statusCode).toBe(200);
-    const content = completion.json().choices[0].message.content as string;
-    const match = content.match(/\((http:\/\/127\.0\.0\.1:3000\/files\/[^)]+)\)/);
-    const fileUrlString = match?.[1];
-    expect(fileUrlString).toBeTruthy();
-
-    const fileUrl = new URL(fileUrlString as string);
-    const fileResponse = await app.inject({
+    const response = await app.inject({
       method: 'GET',
-      url: `${fileUrl.pathname}${fileUrl.search}`
+      url: '/%66iles/secret'
     });
 
-    expect(fileResponse.statusCode).toBe(200);
-    expect(fileResponse.headers['content-type']).toBe('image/png');
-    expect(fileResponse.body).toBe('image-bytes');
+    expect(response.statusCode).not.toBe(200);
     await app.close();
   });
 
@@ -298,7 +265,7 @@ describe('HTTP routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://example.com/input.png');
+    expect(fetchMock).toHaveBeenNthCalledWith(1, new URL('https://example.com/input.png'));
     const upstreamCall = fetchMock.mock.calls[1];
     expect(upstreamCall?.[0]).toContain('/images/edits');
     const upstreamOptions = upstreamCall?.[1] as RequestInit | undefined;
@@ -351,7 +318,7 @@ describe('HTTP routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://example.com/input.png');
+    expect(fetchMock).toHaveBeenNthCalledWith(1, new URL('https://example.com/input.png'));
     const upstreamUrl = fetchMock.mock.calls[1]?.[0] as string;
     expect(upstreamUrl).toContain('/images/edits');
     await app.close();
@@ -453,6 +420,89 @@ describe('HTTP routes', () => {
     expect(fetchCall?.[1]?.body).toBeInstanceOf(Uint8Array);
     const upstreamBody = Buffer.from(fetchCall?.[1]?.body as Uint8Array).toString('utf8');
     expect(upstreamBody).toContain('name="model"');
+    await app.close();
+  });
+
+  it('passes through multipart /v1/images/edits with quoted boundary and binary file payload', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({ created: 1, data: [{ url: 'http://upstream.test/edited-multipart-binary.png' }] }),
+      text: async () => ''
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const app = await buildApp(await createConfig());
+    const boundary = '----visionwrapperquoted';
+    const binaryPayload = Buffer.from([0x00, 0xff, 0x0d, 0x0a, 0x61, 0x62]);
+    const multipart = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="input.png"\r\nContent-Type: image/png\r\n\r\n`, 'utf8'),
+      binaryPayload,
+      Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\ngpt-image-2\r\n--${boundary}--\r\n`, 'utf8')
+    ]);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/edits',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': `multipart/form-data; boundary="${boundary}"`
+      },
+      payload: multipart
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data[0].url).toBe('http://upstream.test/edited-multipart-binary.png');
+    const fetchCall = fetchMock.mock.calls[0];
+    expect(fetchCall?.[1]?.body).toBeInstanceOf(Uint8Array);
+    await app.close();
+  });
+
+  it('maps image route timeout failures to 504', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      throw new DOMException('The operation was aborted', 'AbortError');
+    }));
+
+    const app = await buildApp(await createConfig({ requestTimeoutMs: 5 }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/generations',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        prompt: 'draw a cat'
+      }
+    });
+
+    expect(response.statusCode).toBe(504);
+    expect(response.json().error.code).toBe('upstream_timeout');
+    await app.close();
+  });
+
+  it('maps image route network failures to 502', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/generations',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        prompt: 'draw a cat'
+      }
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error.code).toBe('upstream_network_error');
     await app.close();
   });
 

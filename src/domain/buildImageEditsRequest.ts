@@ -1,4 +1,5 @@
 import type { ChatCompletionsRequest } from '../openai/chatSchemas.js';
+import { assertSafeClientImageUrl } from '../security/safeExternalUrl.js';
 
 type BuiltImageEditsForm = {
   formData: FormData;
@@ -36,25 +37,21 @@ export async function buildImageEditsForm(
 }
 
 async function imageUrlToFile(imageUrl: string): Promise<File> {
-  const response = await fetch(imageUrl);
+  const safeUrl = await assertSafeClientImageUrl(imageUrl);
+  const response = await fetch(safeUrl);
   if (!response.ok) {
     throw new Error(`Failed to download upstream image input (${response.status})`);
   }
 
   const contentType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
   const bytes = await response.arrayBuffer();
-  return new File([bytes], inferFilename(imageUrl, contentType), { type: contentType });
+  return new File([bytes], inferFilename(safeUrl, contentType), { type: contentType });
 }
 
-function inferFilename(imageUrl: string, contentType: string): string {
-  try {
-    const pathname = new URL(imageUrl).pathname;
-    const segment = pathname.split('/').filter(Boolean).pop();
-    if (segment && segment.includes('.')) {
-      return segment;
-    }
-  } catch {
-    // ignore invalid URL here; fetch will surface the actual problem
+function inferFilename(imageUrl: URL, contentType: string): string {
+  const segment = imageUrl.pathname.split('/').filter(Boolean).pop();
+  if (segment && segment.includes('.')) {
+    return segment;
   }
 
   const extension = contentTypeToExtension(contentType);

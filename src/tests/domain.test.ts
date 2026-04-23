@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as dns from 'node:dns';
 import { buildChatResponse } from '../domain/buildChatResponse.js';
 import { buildImageRequest } from '../domain/buildImageRequest.js';
 import {
@@ -69,6 +70,8 @@ describe('buildImageRequest', () => {
 
 describe('buildImageEditsForm', () => {
   it('maps supported image edit fields into multipart form data', async () => {
+    const lookupSpy = vi.spyOn(dns.promises, 'lookup') as unknown as { mockImplementation(fn: () => Promise<dns.LookupAddress[]>): unknown };
+    lookupSpy.mockImplementation(async () => [{ address: '93.184.216.34', family: 4 }]);
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -85,7 +88,7 @@ describe('buildImageEditsForm', () => {
       background: 'transparent'
     }, 'prompt', 'https://example.com/input.png');
 
-    expect(fetchMock).toHaveBeenCalledWith('https://example.com/input.png');
+    expect(fetchMock).toHaveBeenCalledWith(new URL('https://example.com/input.png'));
     expect(formData.get('model')).toBe('gpt-image-1');
     expect(formData.get('prompt')).toBe('prompt');
     expect(formData.get('size')).toBe('1024x1024');
@@ -93,6 +96,22 @@ describe('buildImageEditsForm', () => {
     expect(formData.get('background')).toBe('transparent');
     expect(formData.get('n')).toBe('1');
     expect(formData.get('image')).toBeInstanceOf(File);
+  });
+
+  it('rejects localhost image input urls', async () => {
+    await expect(buildImageEditsForm({
+      model: 'gpt-image-1',
+      messages: []
+    }, 'prompt', 'http://127.0.0.1/input.png')).rejects.toThrow('Image input URL must be a public http/https address');
+  });
+
+  it('rejects hostnames that resolve to private addresses', async () => {
+    const lookupSpy = vi.spyOn(dns.promises, 'lookup') as unknown as { mockImplementation(fn: () => Promise<dns.LookupAddress[]>): unknown };
+    lookupSpy.mockImplementation(async () => [{ address: '127.0.0.1', family: 4 }]);
+    await expect(buildImageEditsForm({
+      model: 'gpt-image-1',
+      messages: []
+    }, 'prompt', 'https://evil.example/input.png')).rejects.toThrow('Image input URL must be a public http/https address');
   });
 });
 
@@ -139,3 +158,5 @@ describe('buildStreamResponse', () => {
     expect(buildStreamThinkCloseChunk('id', 1, 'gpt-image-1')).toContain('</think>');
   });
 });
+
+
