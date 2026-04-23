@@ -9,7 +9,7 @@ const envSchema = z.object({
   UPSTREAM_BASE_URL: z.string().url(),
   UPSTREAM_API_KEY: z.string().min(1),
   PROXY_API_KEYS: z.string().min(1),
-  IMAGE_MODEL_ALIASES: z.string().default('gpt-image-1'),
+  IMAGE_MODEL_ALIASES: z.string().default('gpt-image-2'),
   IMAGE_STORAGE_DIR: z.string().min(1).default('data/images'),
   REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
   BODY_LIMIT_BYTES: z.coerce.number().int().positive().default(20 * 1024 * 1024),

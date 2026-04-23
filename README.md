@@ -40,7 +40,7 @@ PUBLIC_BASE_URL=http://localhost:3000
 UPSTREAM_BASE_URL=http://your-upstream-openai-compatible-host/v1
 UPSTREAM_API_KEY=
 PROXY_API_KEYS=dev-proxy-key
-IMAGE_MODEL_ALIASES=gpt-image-1
+IMAGE_MODEL_ALIASES=gpt-image-2
 IMAGE_STORAGE_DIR=data/images
 REQUEST_TIMEOUT_MS=300000
 BODY_LIMIT_BYTES=20971520
@@ -95,7 +95,7 @@ curl -s \
 ```bash
 curl -s \
   -H "Authorization: Bearer dev-proxy-key" \
-  http://127.0.0.1:3000/v1/models/gpt-image-1
+  http://127.0.0.1:3000/v1/models/gpt-image-2
 ```
 
 ### Generate an image through chat completions
@@ -106,7 +106,7 @@ curl -s \
   -H "Content-Type: application/json" \
   http://127.0.0.1:3000/v1/chat/completions \
   -d '{
-    "model": "gpt-image-1",
+    "model": "gpt-image-2",
     "messages": [
       { "role": "user", "content": "A cinematic orange cat sitting on the moon" }
     ]
@@ -120,7 +120,7 @@ Typical response shape:
   "id": "chatcmpl_xxx",
   "object": "chat.completion",
   "created": 1710000000,
-  "model": "gpt-image-1",
+  "model": "gpt-image-2",
   "choices": [
     {
       "index": 0,
@@ -147,7 +147,7 @@ curl -N \
   -H "Content-Type: application/json" \
   http://127.0.0.1:3000/v1/chat/completions \
   -d '{
-    "model": "gpt-image-1",
+    "model": "gpt-image-2",
     "stream": true,
     "messages": [
       { "role": "user", "content": "An astronaut riding a bicycle on Mars" }
@@ -165,7 +165,7 @@ curl -s \
   -H "Content-Type: application/json" \
   http://127.0.0.1:3000/v1/images/generations \
   -d '{
-    "model": "gpt-image-1",
+    "model": "gpt-image-2",
     "prompt": "A watercolor fox"
   }'
 ```
@@ -178,7 +178,7 @@ curl -s \
   -H "Content-Type: application/json" \
   http://127.0.0.1:3000/v1/images/edits \
   -d '{
-    "model": "gpt-image-1",
+    "model": "gpt-image-2",
     "prompt": "Add a sunrise background"
   }'
 ```
