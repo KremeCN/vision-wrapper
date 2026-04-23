@@ -1,4 +1,6 @@
+import type { RemoteImageUrlPolicy } from '../config.js';
 import type { ChatCompletionsRequest } from '../openai/chatSchemas.js';
+import { safeDownload } from '../security/safeFetch.js';
 import { assertSafeClientImageUrl } from '../security/safeExternalUrl.js';
 
 type BuiltImageEditsForm = {
@@ -8,7 +10,8 @@ type BuiltImageEditsForm = {
 export async function buildImageEditsForm(
   request: ChatCompletionsRequest,
   prompt: string,
-  imageUrl: string
+  imageUrl: string,
+  remoteImageUrlPolicy: RemoteImageUrlPolicy
 ): Promise<BuiltImageEditsForm> {
   if (request.n !== undefined && request.n !== 1) {
     throw new Error('Only n=1 is supported');
@@ -17,7 +20,7 @@ export async function buildImageEditsForm(
   const formData = new FormData();
   formData.set('model', request.model);
   formData.set('prompt', prompt);
-  formData.set('image', await imageUrlToFile(imageUrl));
+  formData.set('image', await imageUrlToFile(imageUrl, remoteImageUrlPolicy));
 
   if (request.size) {
     formData.set('size', request.size);
@@ -36,16 +39,20 @@ export async function buildImageEditsForm(
   return { formData };
 }
 
-async function imageUrlToFile(imageUrl: string): Promise<File> {
-  const safeUrl = await assertSafeClientImageUrl(imageUrl);
-  const response = await fetch(safeUrl);
+async function imageUrlToFile(imageUrl: string, remoteImageUrlPolicy: RemoteImageUrlPolicy): Promise<File> {
+  const safeUrl = await assertSafeClientImageUrl(imageUrl, { policy: remoteImageUrlPolicy });
+  const response = await safeDownload(safeUrl);
   if (!response.ok) {
     throw new Error(`Failed to download upstream image input (${response.status})`);
   }
 
   const contentType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
+  if (!contentType.toLowerCase().startsWith('image/')) {
+    throw new Error(`Image input URL must return an image content-type (received ${contentType})`);
+  }
+
   const bytes = await response.arrayBuffer();
-  return new File([bytes], inferFilename(safeUrl, contentType), { type: contentType });
+  return new File([bytes], inferFilename(safeUrl.url, contentType), { type: contentType });
 }
 
 function inferFilename(imageUrl: URL, contentType: string): string {

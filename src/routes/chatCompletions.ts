@@ -80,7 +80,7 @@ export async function registerChatCompletionsRoute(
       }
 
       const imageResponse = imageInput
-        ? await openAiClient.editImage(await buildImageEditsForm(body, prompt, imageInput.imageUrl))
+        ? await openAiClient.editImage(await buildImageEditsForm(body, prompt, imageInput.imageUrl, config.remoteImageUrlPolicy))
         : await openAiClient.generateImage(buildImageRequest(body, prompt));
       const imageData = imageResponse.data[0];
       if (!imageData) {

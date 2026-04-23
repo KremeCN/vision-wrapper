@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetSafeRequestForTests, setSafeRequestForTests } from '../../security/safeFetch.js';
 import { buildApp } from '../../app.js';
 import type { AppConfig } from '../../config.js';
 
@@ -10,6 +11,7 @@ describe('HTTP routes', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    resetSafeRequestForTests();
   });
 
   afterEach(async () => {
@@ -38,6 +40,7 @@ describe('HTTP routes', () => {
       fileTtlHours: 168,
       streamProgressLanguage: 'en',
       logLevel: 'silent',
+      remoteImageUrlPolicy: 'https_only',
       ...overrides
     };
   }
@@ -226,20 +229,21 @@ describe('HTTP routes', () => {
   });
 
   it('routes chat with image input to upstream multipart edits', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        headers: { get: () => 'image/png' },
+    const requestMock = vi.fn().mockResolvedValue({
+      statusCode: 200,
+      headers: { 'content-type': 'image/png' },
+      body: {
         arrayBuffer: async () => Buffer.from('input-image')
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        headers: { get: () => 'application/json; charset=utf-8' },
-        json: async () => ({ data: [{ b64_json: Buffer.from('image-bytes').toString('base64') }] }),
-        text: async () => ''
-      });
+      }
+    });
+    setSafeRequestForTests(requestMock as never);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({ data: [{ b64_json: Buffer.from('image-bytes').toString('base64') }] }),
+      text: async () => ''
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     const app = await buildApp(await createConfig());
@@ -265,8 +269,8 @@ describe('HTTP routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(fetchMock).toHaveBeenNthCalledWith(1, new URL('https://example.com/input.png'));
-    const upstreamCall = fetchMock.mock.calls[1];
+    expect(requestMock).toHaveBeenCalledTimes(1);
+    const upstreamCall = fetchMock.mock.calls[0];
     expect(upstreamCall?.[0]).toContain('/images/edits');
     const upstreamOptions = upstreamCall?.[1] as RequestInit | undefined;
     expect(upstreamOptions?.headers).toEqual({ authorization: 'Bearer upstream-token' });
@@ -278,23 +282,7 @@ describe('HTTP routes', () => {
     await app.close();
   });
 
-  it('routes chat with image input to upstream edits', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        headers: { get: () => 'image/png' },
-        arrayBuffer: async () => Buffer.from('input-image')
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        headers: { get: () => 'application/json; charset=utf-8' },
-        json: async () => ({ data: [{ b64_json: Buffer.from('image-bytes').toString('base64') }] }),
-        text: async () => ''
-      });
-    vi.stubGlobal('fetch', fetchMock);
-
+  it('rejects chat image input with unsafe remote url at HTTP layer', async () => {
     const app = await buildApp(await createConfig());
     const response = await app.inject({
       method: 'POST',
@@ -310,17 +298,15 @@ describe('HTTP routes', () => {
             role: 'user',
             content: [
               { type: 'text', text: 'edit this image' },
-              { type: 'image_url', image_url: { url: 'https://example.com/input.png' } }
+              { type: 'image_url', image_url: { url: 'http://127.0.0.1/input.png' } }
             ]
           }
         ]
       }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(fetchMock).toHaveBeenNthCalledWith(1, new URL('https://example.com/input.png'));
-    const upstreamUrl = fetchMock.mock.calls[1]?.[0] as string;
-    expect(upstreamUrl).toContain('/images/edits');
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('unsafe_image_url');
     await app.close();
   });
 
@@ -420,6 +406,68 @@ describe('HTTP routes', () => {
     expect(fetchCall?.[1]?.body).toBeInstanceOf(Uint8Array);
     const upstreamBody = Buffer.from(fetchCall?.[1]?.body as Uint8Array).toString('utf8');
     expect(upstreamBody).toContain('name="model"');
+    await app.close();
+  });
+
+  it('rejects multipart /v1/images/edits when model field is missing', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const app = await buildApp(await createConfig());
+    const boundary = '----visionwrappermissingmodel';
+    const multipart = [
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="prompt"',
+      '',
+      'edit this image',
+      `--${boundary}--`,
+      ''
+    ].join('\r\n');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/edits',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': `multipart/form-data; boundary=${boundary}`
+      },
+      payload: multipart
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('invalid_multipart_model');
+    expect(fetchMock).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('rejects multipart /v1/images/edits when multipart body cannot be reliably parsed', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const app = await buildApp(await createConfig());
+    const boundary = '----visionwrapperlfonly';
+    const multipart = [
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="model"',
+      '',
+      'other-model',
+      `--${boundary}--`,
+      ''
+    ].join('\n');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/edits',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': `multipart/form-data; boundary=${boundary}`
+      },
+      payload: multipart
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('invalid_multipart_model');
+    expect(fetchMock).not.toHaveBeenCalled();
     await app.close();
   });
 

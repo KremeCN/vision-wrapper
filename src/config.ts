@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+const remoteImageUrlPolicySchema = z.enum(['https_only', 'http_and_https', 'disabled']);
+
 const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   HOST: z.string().min(1).default('0.0.0.0'),
@@ -17,8 +19,11 @@ const envSchema = z.object({
   CORS_ALLOW_ORIGIN: z.string().default('*'),
   FILE_TTL_HOURS: z.coerce.number().int().positive().default(168),
   STREAM_PROGRESS_LANGUAGE: z.enum(['en', 'zh']).default('en'),
+  REMOTE_IMAGE_URL_POLICY: remoteImageUrlPolicySchema.default('https_only'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info')
 });
+
+export type RemoteImageUrlPolicy = z.infer<typeof remoteImageUrlPolicySchema>;
 
 export type AppConfig = {
   port: number;
@@ -37,6 +42,7 @@ export type AppConfig = {
   corsAllowOrigin: string;
   fileTtlHours: number;
   streamProgressLanguage: 'en' | 'zh';
+  remoteImageUrlPolicy: RemoteImageUrlPolicy;
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent';
 };
 
@@ -85,6 +91,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     corsAllowOrigin: parsed.CORS_ALLOW_ORIGIN,
     fileTtlHours: parsed.FILE_TTL_HOURS,
     streamProgressLanguage: parsed.STREAM_PROGRESS_LANGUAGE,
+    remoteImageUrlPolicy: parsed.REMOTE_IMAGE_URL_POLICY,
     logLevel: parsed.LOG_LEVEL
   };
 }

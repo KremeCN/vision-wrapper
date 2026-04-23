@@ -163,7 +163,7 @@ function validateMultipartModel(rawBody: Buffer, contentType: string, expectedMo
 
   const model = parseMultipartModel(rawBody, boundary);
   if (!model) {
-    return null;
+    return new BadRequestError('Multipart form-data must include a valid model field', 'invalid_multipart_model', 'model');
   }
 
   if (model !== expectedModel) {

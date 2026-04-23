@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { lookup as lookupMime } from 'mime-types';
+import type { RemoteImageUrlPolicy } from '../config.js';
+import { safeDownload } from '../security/safeFetch.js';
 import { assertSafeUpstreamImageUrl } from '../security/safeExternalUrl.js';
 import { createFileId } from '../utils/id.js';
 import { createPromptDigest, type FileMetadataStore } from './fileMetadataStore.js';
@@ -16,6 +18,7 @@ type LocalFileStoreOptions = {
   rootDir: string;
   publicBaseUrl: string;
   metadataStore: FileMetadataStore;
+  remoteImageUrlPolicy: RemoteImageUrlPolicy;
 };
 
 export class LocalFileStore {
@@ -27,13 +30,17 @@ export class LocalFileStore {
   }
 
   async saveRemoteImage(imageUrl: string, context?: { model: string; prompt: string }): Promise<StoredImage> {
-    const safeUrl = await assertSafeUpstreamImageUrl(imageUrl);
-    const response = await fetch(safeUrl);
+    const safeUrl = await assertSafeUpstreamImageUrl(imageUrl, { policy: this.options.remoteImageUrlPolicy });
+    const response = await safeDownload(safeUrl);
     if (!response.ok) {
       throw new Error(`Failed to download upstream image: ${response.status}`);
     }
 
-    const mimeType = response.headers.get('content-type') ?? 'image/png';
+    const mimeType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
+    if (!mimeType.toLowerCase().startsWith('image/')) {
+      throw new Error(`Upstream image URL must return an image content-type (received ${mimeType})`);
+    }
+
     const extension = mimeType.split('/')[1] ?? 'png';
     const arrayBuffer = await response.arrayBuffer();
     return this.saveBuffer(Buffer.from(arrayBuffer), extension, mimeType, 'remote_url', context);

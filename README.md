@@ -50,6 +50,7 @@ MAX_PROMPT_CHARS=4000
 CORS_ALLOW_ORIGIN=*
 FILE_TTL_HOURS=168
 STREAM_PROGRESS_LANGUAGE=en
+REMOTE_IMAGE_URL_POLICY=https_only
 LOG_LEVEL=info
 ```
 
@@ -72,6 +73,10 @@ LOG_LEVEL=info
 - Streaming responses now include progress text wrapped in `<think>...</think>` before the final markdown image URL.
 - `STREAM_PROGRESS_LANGUAGE` controls the progress text language inside `<think>` and supports `en` and `zh`.
 - `BODY_LIMIT_BYTES` controls max request body size (defaults to 20MB for image-in-chat uploads).
+- `REMOTE_IMAGE_URL_POLICY` controls remote image downloads for chat image inputs and upstream image URLs:
+  - `https_only` — allow only public HTTPS URLs (default)
+  - `http_and_https` — allow public HTTP and HTTPS URLs
+  - `disabled` — reject all remote image URLs
 - Generated images are stored under `IMAGE_STORAGE_DIR`.
 - File metadata is written under `IMAGE_STORAGE_DIR/.meta`.
 
@@ -258,6 +263,14 @@ docker run --rm -p 3000:3000 \
 ```
 
 On Windows PowerShell, mount the data directory like this instead:
+
+```powershell
+docker run --rm -p 3000:3000 `
+  --env-file .env `
+  -v ${PWD}/data:/app/data `
+  vision-wrapper
+```
+
 
 ```powershell
 docker run --rm -p 3000:3000 `

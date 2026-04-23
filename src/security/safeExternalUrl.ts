@@ -1,18 +1,36 @@
 import { promises as dns } from 'node:dns';
 import { isIP } from 'node:net';
+import type { RemoteImageUrlPolicy } from '../config.js';
 import { BadRequestError, UpstreamError } from '../http/errors.js';
 
 const FORBIDDEN_HOSTNAMES = new Set(['localhost']);
 
-export async function assertSafeClientImageUrl(rawUrl: string): Promise<URL> {
-  return assertSafeExternalUrl(rawUrl, () => new BadRequestError('Image input URL must be a public http/https address', 'unsafe_image_url', 'messages'));
+export type SafeResolvedUrl = {
+  url: URL;
+  address: string;
+};
+
+type ExternalUrlOptions = {
+  policy: RemoteImageUrlPolicy;
+};
+
+export async function assertSafeClientImageUrl(rawUrl: string, options: ExternalUrlOptions): Promise<SafeResolvedUrl> {
+  return assertSafeExternalUrl(
+    rawUrl,
+    options,
+    () => new BadRequestError(buildClientImageUrlMessage(options.policy), 'unsafe_image_url', 'messages')
+  );
 }
 
-export async function assertSafeUpstreamImageUrl(rawUrl: string): Promise<URL> {
-  return assertSafeExternalUrl(rawUrl, () => new UpstreamError(502, 'Upstream returned an unsafe image URL', 'unsafe_upstream_image_url'));
+export async function assertSafeUpstreamImageUrl(rawUrl: string, options: ExternalUrlOptions): Promise<SafeResolvedUrl> {
+  return assertSafeExternalUrl(
+    rawUrl,
+    options,
+    () => new UpstreamError(502, buildUpstreamImageUrlMessage(options.policy), 'unsafe_upstream_image_url')
+  );
 }
 
-async function assertSafeExternalUrl(rawUrl: string, buildError: () => Error): Promise<URL> {
+async function assertSafeExternalUrl(rawUrl: string, options: ExternalUrlOptions, buildError: () => Error): Promise<SafeResolvedUrl> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -20,11 +38,11 @@ async function assertSafeExternalUrl(rawUrl: string, buildError: () => Error): P
     throw buildError();
   }
 
-  if (!isAllowedProtocol(parsed.protocol)) {
+  if (!isAllowedProtocol(parsed.protocol, options.policy)) {
     throw buildError();
   }
 
-  const hostname = parsed.hostname.trim().toLowerCase();
+  const hostname = normalizeHostname(parsed.hostname);
   if (!hostname || FORBIDDEN_HOSTNAMES.has(hostname)) {
     throw buildError();
   }
@@ -43,7 +61,10 @@ async function assertSafeExternalUrl(rawUrl: string, buildError: () => Error): P
     throw buildError();
   }
 
-  return parsed;
+  return {
+    url: parsed,
+    address: addresses[0] as string
+  };
 }
 
 async function resolveAllAddresses(hostname: string, buildError: () => Error): Promise<string[]> {
@@ -58,13 +79,47 @@ async function resolveAllAddresses(hostname: string, buildError: () => Error): P
   }
 }
 
+function normalizeHostname(hostname: string): string {
+  return hostname.trim().toLowerCase().replace(/^\[(.*)\]$/, '$1');
+}
+
 function isPrivateAddress(address: string): boolean {
   const ipVersion = isIP(address);
   return (ipVersion === 4 && isPrivateIpv4(address)) || (ipVersion === 6 && isPrivateIpv6(address));
 }
 
-function isAllowedProtocol(protocol: string): boolean {
+function isAllowedProtocol(protocol: string, policy: RemoteImageUrlPolicy): boolean {
+  if (policy === 'disabled') {
+    return false;
+  }
+
+  if (policy === 'https_only') {
+    return protocol === 'https:';
+  }
+
   return protocol === 'http:' || protocol === 'https:';
+}
+
+function buildClientImageUrlMessage(policy: RemoteImageUrlPolicy): string {
+  switch (policy) {
+    case 'disabled':
+      return 'Remote image URLs are disabled';
+    case 'https_only':
+      return 'Image input URL must be a public https address';
+    case 'http_and_https':
+      return 'Image input URL must be a public http/https address';
+  }
+}
+
+function buildUpstreamImageUrlMessage(policy: RemoteImageUrlPolicy): string {
+  switch (policy) {
+    case 'disabled':
+      return 'Upstream returned a remote image URL but remote image downloads are disabled';
+    case 'https_only':
+      return 'Upstream returned a non-public or non-https image URL';
+    case 'http_and_https':
+      return 'Upstream returned an unsafe image URL';
+  }
 }
 
 function isPrivateIpv4(ip: string): boolean {
@@ -87,8 +142,8 @@ function isPrivateIpv6(ip: string): boolean {
     || normalized === '::'
     || normalized.startsWith('fc')
     || normalized.startsWith('fd')
-    || normalized.startsWith('fe80:')
-    || normalized.startsWith('fe90:')
-    || normalized.startsWith('fea0:')
-    || normalized.startsWith('feb0:');
+    || normalized.startsWith('fe8')
+    || normalized.startsWith('fe9')
+    || normalized.startsWith('fea')
+    || normalized.startsWith('feb');
 }

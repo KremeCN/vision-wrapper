@@ -26,6 +26,7 @@ export function createAuthPreHandler(config: AppConfig) {
     const token = authorization.slice('Bearer '.length).trim();
     if (!config.proxyApiKeys.has(token)) {
       sendOpenAiError(reply, requestId, new AuthenticationError('Invalid bearer token', 'invalid_bearer_token'));
+      return;
     }
   };
 }

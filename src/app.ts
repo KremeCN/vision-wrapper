@@ -31,7 +31,8 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   const fileStore = new LocalFileStore({
     rootDir: config.imageStorageDir,
     publicBaseUrl: config.publicBaseUrl,
-    metadataStore
+    metadataStore,
+    remoteImageUrlPolicy: config.remoteImageUrlPolicy
   });
 
   await metadataStore.cleanupExpired(config.fileTtlHours);
