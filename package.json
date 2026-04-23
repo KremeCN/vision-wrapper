@@ -1,0 +1,32 @@
+{
+  "name": "vision-wrapper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "node --env-file=.env --import tsx --watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node --env-file=.env dist/server.js",
+    "cleanup": "node --env-file=.env dist/jobs/cleanupExpiredFiles.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/rate-limit": "^10.3.0",
+    "fastify": "^5.3.3",
+    "mime-types": "^2.1.35",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/mime-types": "^2.1.4",
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.2"
+  }
+}

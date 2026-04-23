@@ -1,0 +1,511 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildApp } from '../../app.js';
+import type { AppConfig } from '../../config.js';
+
+describe('HTTP routes', () => {
+  const tempDirs: string[] = [];
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(async () => {
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  async function createConfig(overrides: Partial<AppConfig> = {}): Promise<AppConfig> {
+    const imageStorageDir = await mkdtemp(path.join(os.tmpdir(), 'vision-wrapper-http-'));
+    tempDirs.push(imageStorageDir);
+
+    return {
+      port: 3000,
+      host: '127.0.0.1',
+      publicBaseUrl: 'http://127.0.0.1:3000',
+      upstreamBaseUrl: 'http://upstream.test/v1',
+      upstreamApiKey: 'upstream-token',
+      proxyApiKeys: new Set(['test-token']),
+      imageModelAliases: new Set(['gpt-image-2']),
+      imageStorageDir,
+      requestTimeoutMs: 1000,
+      bodyLimitBytes: 20 * 1024 * 1024,
+      rateLimitWindowMs: 60000,
+      rateLimitMax: 10,
+      maxPromptChars: 4000,
+      corsAllowOrigin: '*',
+      fileTtlHours: 168,
+      streamProgressLanguage: 'en',
+      logLevel: 'silent',
+      ...overrides
+    };
+  }
+
+  it('returns configured models', async () => {
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/models',
+      headers: { authorization: 'Bearer test-token' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['x-request-id']).toBeTruthy();
+    expect(response.headers['access-control-allow-origin']).toBe('*');
+    expect(response.json().data[0].id).toBe('gpt-image-2');
+    await app.close();
+  });
+
+  it('returns OpenAI-style error for unknown model', async () => {
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/models/unknown-model',
+      headers: { authorization: 'Bearer test-token' }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      error: {
+        message: "Model 'unknown-model' not found",
+        type: 'invalid_request_error',
+        param: null,
+        code: 'model_not_found'
+      }
+    });
+    await app.close();
+  });
+
+  it('returns OpenAI-style auth error', async () => {
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/models'
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json().error.type).toBe('authentication_error');
+    await app.close();
+  });
+
+  it('rejects unsupported tool fields', async () => {
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        messages: [{ role: 'user', content: 'draw a cat' }],
+        tools: [{ type: 'function' }]
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('unsupported_tools');
+    await app.close();
+  });
+
+  it('allows public file access without auth', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({
+        data: [{ b64_json: Buffer.from('image-bytes').toString('base64') }]
+      }),
+      text: async () => ''
+    }));
+
+    const app = await buildApp(await createConfig());
+    const completion = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        messages: [{ role: 'user', content: 'draw a cat' }],
+        temperature: 0.5,
+        metadata: { source: 'test' }
+      }
+    });
+
+    expect(completion.statusCode).toBe(200);
+    const content = completion.json().choices[0].message.content as string;
+    const match = content.match(/\((http:\/\/127\.0\.0\.1:3000\/files\/[^)]+)\)/);
+    const fileUrlString = match?.[1];
+    expect(fileUrlString).toBeTruthy();
+
+    const fileUrl = new URL(fileUrlString as string);
+    const fileResponse = await app.inject({
+      method: 'GET',
+      url: `${fileUrl.pathname}${fileUrl.search}`
+    });
+
+    expect(fileResponse.statusCode).toBe(200);
+    expect(fileResponse.headers['content-type']).toBe('image/png');
+    expect(fileResponse.body).toBe('image-bytes');
+    await app.close();
+  });
+
+  it('returns streaming progress text in English by default', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({
+        data: [{ b64_json: Buffer.from('image-bytes').toString('base64') }]
+      }),
+      text: async () => ''
+    }));
+
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        stream: true,
+        messages: [{ role: 'user', content: 'draw a cat' }]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('<think>');
+    expect(response.body).toContain('Processing your image request.');
+    expect(response.body).toContain('Generating the image with the upstream provider.');
+    expect(response.body).toContain('Saving the generated image and preparing a public URL.');
+    expect(response.body).toContain('Image is ready.');
+    expect(response.body).toContain('</think>');
+    expect(response.body).toContain('![generated image](');
+    await app.close();
+  });
+
+  it('returns streaming progress text in Chinese when configured', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({
+        data: [{ b64_json: Buffer.from('image-bytes').toString('base64') }]
+      }),
+      text: async () => ''
+    }));
+
+    const app = await buildApp(await createConfig({ streamProgressLanguage: 'zh' }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        stream: true,
+        messages: [{ role: 'user', content: 'draw a cat' }]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('<think>');
+    expect(response.body).toContain('正在处理你的图片请求。');
+    expect(response.body).toContain('正在调用上游服务生成图片。');
+    expect(response.body).toContain('正在保存生成的图片并准备公开链接。');
+    expect(response.body).toContain('图片已准备完成。');
+    expect(response.body).toContain('</think>');
+    expect(response.body).toContain('![generated image](');
+    await app.close();
+  });
+
+  it('emits a visible stream error and closes think on upstream timeout', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      throw new DOMException('The operation was aborted', 'AbortError');
+    }));
+
+    const app = await buildApp(await createConfig({ requestTimeoutMs: 5 }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        stream: true,
+        messages: [{ role: 'user', content: 'draw a cat' }]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('<think>');
+    expect(response.body).toContain('</think>');
+    expect(response.body).toContain('Error: Upstream image generation timed out');
+    expect(response.body).toContain('[DONE]');
+    await app.close();
+  });
+
+  it('routes chat with image input to upstream multipart edits', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'image/png' },
+        arrayBuffer: async () => Buffer.from('input-image')
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json; charset=utf-8' },
+        json: async () => ({ data: [{ b64_json: Buffer.from('image-bytes').toString('base64') }] }),
+        text: async () => ''
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'edit this image' },
+              { type: 'image_url', image_url: { url: 'https://example.com/input.png' } }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://example.com/input.png');
+    const upstreamCall = fetchMock.mock.calls[1];
+    expect(upstreamCall?.[0]).toContain('/images/edits');
+    const upstreamOptions = upstreamCall?.[1] as RequestInit | undefined;
+    expect(upstreamOptions?.headers).toEqual({ authorization: 'Bearer upstream-token' });
+    expect(upstreamOptions?.body).toBeInstanceOf(FormData);
+    const upstreamForm = upstreamOptions?.body as FormData;
+    expect(upstreamForm.get('model')).toBe('gpt-image-2');
+    expect(upstreamForm.get('prompt')).toBe('edit this image');
+    expect(upstreamForm.get('image')).toBeInstanceOf(File);
+    await app.close();
+  });
+
+  it('routes chat with image input to upstream edits', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'image/png' },
+        arrayBuffer: async () => Buffer.from('input-image')
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json; charset=utf-8' },
+        json: async () => ({ data: [{ b64_json: Buffer.from('image-bytes').toString('base64') }] }),
+        text: async () => ''
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'edit this image' },
+              { type: 'image_url', image_url: { url: 'https://example.com/input.png' } }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://example.com/input.png');
+    const upstreamUrl = fetchMock.mock.calls[1]?.[0] as string;
+    expect(upstreamUrl).toContain('/images/edits');
+    await app.close();
+  });
+
+  it('passes through /v1/images/generations to upstream', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({ created: 1, data: [{ url: 'http://upstream.test/image.png' }] }),
+      text: async () => ''
+    }));
+
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/generations',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        prompt: 'draw a cat'
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data[0].url).toBe('http://upstream.test/image.png');
+    await app.close();
+  });
+  it('passes through /v1/images/edits to upstream', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({ created: 1, data: [{ url: 'http://upstream.test/edited.png' }] }),
+      text: async () => ''
+    }));
+
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/edits',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        prompt: 'edit this image'
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data[0].url).toBe('http://upstream.test/edited.png');
+    await app.close();
+  });
+
+  it('passes through multipart /v1/images/edits to upstream', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({ created: 1, data: [{ url: 'http://upstream.test/edited-multipart.png' }] }),
+      text: async () => ''
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const app = await buildApp(await createConfig());
+    const boundary = '----visionwrappertest';
+    const multipart = [
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="model"',
+      '',
+      'gpt-image-2',
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="prompt"',
+      '',
+      'edit this image',
+      `--${boundary}--`,
+      ''
+    ].join('\r\n');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/edits',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': `multipart/form-data; boundary=${boundary}`
+      },
+      payload: multipart
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data[0].url).toBe('http://upstream.test/edited-multipart.png');
+    const fetchCall = fetchMock.mock.calls[0];
+    expect(fetchCall?.[1]?.body).toBeInstanceOf(Uint8Array);
+    const upstreamBody = Buffer.from(fetchCall?.[1]?.body as Uint8Array).toString('utf8');
+    expect(upstreamBody).toContain('name="model"');
+    await app.close();
+  });
+
+  it('rejects unsupported image operation', async () => {
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/variations',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        prompt: 'draw a cat'
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('unsupported_operation');
+    await app.close();
+  });
+
+  it('rejects non-exposed model alias on image endpoints', async () => {
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/generations',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'other-model',
+        prompt: 'draw a cat'
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('unsupported_model');
+    await app.close();
+  });
+
+  it('answers preflight requests', async () => {
+    const app = await buildApp(await createConfig());
+    const response = await app.inject({
+      method: 'OPTIONS',
+      url: '/v1/chat/completions'
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers['access-control-allow-origin']).toBe('*');
+    expect(response.headers['access-control-allow-methods']).toContain('POST');
+    await app.close();
+  });
+});
