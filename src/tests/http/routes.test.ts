@@ -153,10 +153,10 @@ describe('HTTP routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain('<think>');
-    expect(response.body).toContain('Processing your image request.');
-    expect(response.body).toContain('Generating the image with the upstream provider.');
-    expect(response.body).toContain('Saving the generated image and preparing a public URL.');
-    expect(response.body).toContain('Image is ready.');
+    expect(response.body).toContain('· Processing your image request.');
+    expect(response.body).toContain('✻ Generating the image with the upstream provider.');
+    expect(response.body).toContain('✽ Saving the generated image and preparing a public URL.');
+    expect(response.body).toContain('❋ Image is ready.');
     expect(response.body).toContain('</think>');
     expect(response.body).toContain('![generated image](');
     await app.close();
@@ -190,10 +190,10 @@ describe('HTTP routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain('<think>');
-    expect(response.body).toContain('正在处理你的图片请求。');
-    expect(response.body).toContain('正在调用上游服务生成图片。');
-    expect(response.body).toContain('正在保存生成的图片并准备公开链接。');
-    expect(response.body).toContain('图片已准备完成。');
+    expect(response.body).toContain('· 正在处理你的图片请求。');
+    expect(response.body).toContain('✻ 正在调用上游服务生成图片。');
+    expect(response.body).toContain('✽ 正在保存生成的图片并准备公开链接。');
+    expect(response.body).toContain('❋ 图片已准备完成。');
     expect(response.body).toContain('</think>');
     expect(response.body).toContain('![generated image](');
     await app.close();

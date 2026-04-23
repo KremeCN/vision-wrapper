@@ -236,8 +236,8 @@ describe('buildStreamResponse', () => {
   });
 
   it('builds localized progress chunks', () => {
-    expect(buildStreamProgressChunk('id', 1, 'gpt-image-2', 'accepted', 'en')).toContain('Processing your image request.');
-    expect(buildStreamProgressChunk('id', 1, 'gpt-image-2', 'accepted', 'zh')).toContain('正在处理你的图片请求。');
+    expect(buildStreamProgressChunk('id', 1, 'gpt-image-2', 'accepted', 'en')).toContain('· Processing your image request.');
+    expect(buildStreamProgressChunk('id', 1, 'gpt-image-2', 'accepted', 'zh')).toContain('· 正在处理你的图片请求。');
   });
 
   it('builds think wrapper chunks', () => {

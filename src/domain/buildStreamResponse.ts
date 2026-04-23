@@ -18,16 +18,16 @@ export type StreamProgressStage = 'accepted' | 'generating' | 'saving' | 'comple
 
 const streamProgressMessages: Record<StreamProgressLanguage, Record<StreamProgressStage, string>> = {
   en: {
-    accepted: 'Processing your image request.',
-    generating: 'Generating the image with the upstream provider.',
-    saving: 'Saving the generated image and preparing a public URL.',
-    completed: 'Image is ready.'
+    accepted: '· Processing your image request.',
+    generating: '✻ Generating the image with the upstream provider.',
+    saving: '✽ Saving the generated image and preparing a public URL.',
+    completed: '❋ Image is ready.'
   },
   zh: {
-    accepted: '正在处理你的图片请求。',
-    generating: '正在调用上游服务生成图片。',
-    saving: '正在保存生成的图片并准备公开链接。',
-    completed: '图片已准备完成。'
+    accepted: '· 正在处理你的图片请求。',
+    generating: '✻ 正在调用上游服务生成图片。',
+    saving: '✽ 正在保存生成的图片并准备公开链接。',
+    completed: '❋ 图片已准备完成。'
   }
 };
 
