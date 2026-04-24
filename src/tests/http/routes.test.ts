@@ -309,7 +309,7 @@ describe('HTTP routes', () => {
   });
 
   it('routes chat with image input to upstream multipart edits', async () => {
-    const lookupSpy = vi.spyOn(dns, 'lookup') as unknown as { mockImplementation(fn: () => Promise<dns.LookupAddress[]>): unknown };
+    const lookupSpy = vi.spyOn(dns, 'lookup') as unknown as { mockImplementation(fn: () => Promise<Array<{ address: string; family: number }>>): unknown };
     lookupSpy.mockImplementation(async () => [{ address: '93.184.216.34', family: 4 }]);
     const requestMock = vi.fn().mockResolvedValue({
       statusCode: 200,
