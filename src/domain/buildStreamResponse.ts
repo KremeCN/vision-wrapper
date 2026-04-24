@@ -55,6 +55,10 @@ export function buildStreamContentChunk(id: string, created: number, model: stri
   });
 }
 
+export function buildStreamHeartbeatChunk(): string {
+  return ': keep-alive\n\n';
+}
+
 export function buildStreamThinkOpenChunk(id: string, created: number, model: string): string {
   return buildStreamContentChunk(id, created, model, '<think>\n');
 }

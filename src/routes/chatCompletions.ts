@@ -6,6 +6,7 @@ import { buildImageEditsForm } from '../domain/buildImageEditsRequest.js';
 import {
   buildStreamContentChunk,
   buildStreamDoneChunk,
+  buildStreamHeartbeatChunk,
   buildStreamProgressChunk,
   buildStreamRoleChunk,
   buildStreamStopChunk,
@@ -22,6 +23,8 @@ import type { OpenAiClient } from '../openai/client.js';
 import type { LocalFileStore } from '../storage/localFileStore.js';
 import { createChatCompletionId } from '../utils/id.js';
 import { unixTimestampSeconds } from '../utils/time.js';
+
+const STREAM_HEARTBEAT_INTERVAL_MS = 15000;
 
 export async function registerChatCompletionsRoute(
   app: FastifyInstance,
@@ -61,12 +64,76 @@ export async function registerChatCompletionsRoute(
 
     const streamId = body.stream ? createChatCompletionId() : null;
     const created = body.stream ? unixTimestampSeconds() : null;
+    let heartbeatTimer: NodeJS.Timeout | null = null;
+    let waitingForHeartbeatDrain = false;
+
+    const handleHeartbeatDrain = (): void => {
+      waitingForHeartbeatDrain = false;
+      startHeartbeat();
+    };
+
+    const stopHeartbeat = (): void => {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+      if (waitingForHeartbeatDrain) {
+        reply.raw.off('drain', handleHeartbeatDrain);
+        waitingForHeartbeatDrain = false;
+      }
+    };
+
+    const handleStreamClosed = (): void => {
+      stopHeartbeat();
+    };
+
+    const bindStreamCleanup = (): void => {
+      request.raw.once('aborted', handleStreamClosed);
+      request.raw.once('close', handleStreamClosed);
+      request.raw.once('error', handleStreamClosed);
+      reply.raw.once('close', handleStreamClosed);
+      reply.raw.once('error', handleStreamClosed);
+    };
+
+    const unbindStreamCleanup = (): void => {
+      request.raw.off('aborted', handleStreamClosed);
+      request.raw.off('close', handleStreamClosed);
+      request.raw.off('error', handleStreamClosed);
+      reply.raw.off('close', handleStreamClosed);
+      reply.raw.off('error', handleStreamClosed);
+    };
+
+    const pauseHeartbeatUntilDrain = (): void => {
+      stopHeartbeat();
+      if (reply.raw.writableEnded || reply.raw.destroyed) {
+        return;
+      }
+      waitingForHeartbeatDrain = true;
+      reply.raw.once('drain', handleHeartbeatDrain);
+    };
+
+    const startHeartbeat = (): void => {
+      if (heartbeatTimer || waitingForHeartbeatDrain) {
+        return;
+      }
+      heartbeatTimer = setInterval(() => {
+        if (reply.raw.writableEnded || reply.raw.destroyed) {
+          stopHeartbeat();
+          return;
+        }
+        if (!reply.raw.write(buildStreamHeartbeatChunk())) {
+          pauseHeartbeatUntilDrain();
+        }
+      }, STREAM_HEARTBEAT_INTERVAL_MS);
+      heartbeatTimer.unref();
+    };
 
     try {
       const prompt = extractPrompt(body, config.maxPromptChars);
       const imageInput = extractImageInput(body);
 
       if (body.stream && streamId && created) {
+        bindStreamCleanup();
         reply.raw.writeHead(200, {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-transform',
@@ -77,6 +144,7 @@ export async function registerChatCompletionsRoute(
         reply.raw.write(buildStreamThinkOpenChunk(streamId, created, body.model));
         reply.raw.write(buildStreamProgressChunk(streamId, created, body.model, 'accepted', config.streamProgressLanguage));
         reply.raw.write(buildStreamProgressChunk(streamId, created, body.model, 'generating', config.streamProgressLanguage));
+        startHeartbeat();
       }
 
       const imageResponse = imageInput
@@ -101,6 +169,7 @@ export async function registerChatCompletionsRoute(
             })();
 
       if (body.stream && streamId && created) {
+        stopHeartbeat();
         reply.raw.write(buildStreamProgressChunk(streamId, created, body.model, 'completed', config.streamProgressLanguage));
         reply.raw.write(buildStreamThinkCloseChunk(streamId, created, body.model));
         reply.raw.write(buildStreamContentChunk(streamId, created, body.model, `![generated image](${storedImage.publicUrl})`));
@@ -115,6 +184,7 @@ export async function registerChatCompletionsRoute(
 
       if (body.stream && streamId && created) {
         if (!reply.raw.headersSent) {
+          bindStreamCleanup();
           reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream; charset=utf-8',
             'Cache-Control': 'no-cache, no-transform',
@@ -125,6 +195,7 @@ export async function registerChatCompletionsRoute(
           reply.raw.write(buildStreamThinkOpenChunk(streamId, created, body.model));
           reply.raw.write(buildStreamProgressChunk(streamId, created, body.model, 'accepted', config.streamProgressLanguage));
         }
+        stopHeartbeat();
         reply.raw.write(buildStreamThinkCloseChunk(streamId, created, body.model));
         reply.raw.write(buildStreamContentChunk(streamId, created, body.model, `Error: ${mappedError.message}`));
         reply.raw.write(buildStreamStopChunk(streamId, created, body.model));
@@ -133,6 +204,9 @@ export async function registerChatCompletionsRoute(
       }
 
       sendOpenAiError(reply, requestId, mappedError);
+    } finally {
+      stopHeartbeat();
+      unbindStreamCleanup();
     }
   });
 }

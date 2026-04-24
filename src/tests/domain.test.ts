@@ -3,6 +3,7 @@ import * as dns from 'node:dns';
 import { buildChatResponse } from '../domain/buildChatResponse.js';
 import { buildImageRequest } from '../domain/buildImageRequest.js';
 import {
+  buildStreamHeartbeatChunk,
   buildStreamProgressChunk,
   buildStreamResponse,
   buildStreamThinkCloseChunk,
@@ -238,6 +239,7 @@ describe('buildStreamResponse', () => {
   it('builds localized progress chunks', () => {
     expect(buildStreamProgressChunk('id', 1, 'gpt-image-2', 'accepted', 'en')).toContain('· Processing your image request.');
     expect(buildStreamProgressChunk('id', 1, 'gpt-image-2', 'accepted', 'zh')).toContain('· 正在处理你的图片请求。');
+    expect(buildStreamHeartbeatChunk()).toBe(': keep-alive\n\n');
   });
 
   it('builds think wrapper chunks', () => {

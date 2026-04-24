@@ -1,3 +1,4 @@
+import { promises as dns } from 'node:dns';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,6 +6,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetSafeRequestForTests, setSafeRequestForTests } from '../../security/safeFetch.js';
 import { buildApp } from '../../app.js';
 import type { AppConfig } from '../../config.js';
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
 
 describe('HTTP routes', () => {
   const tempDirs: string[] = [];
@@ -15,6 +30,7 @@ describe('HTTP routes', () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
@@ -199,6 +215,70 @@ describe('HTTP routes', () => {
     await app.close();
   });
 
+  it('emits heartbeat comments during long streamed requests and stops after completion', async () => {
+    vi.useFakeTimers();
+    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+    const fetchDeferred = createDeferred<{
+      ok: true;
+      status: number;
+      headers: { get: () => string };
+      json: () => Promise<{ data: Array<{ b64_json: string }> }>;
+      text: () => Promise<string>;
+    }>();
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => fetchDeferred.promise));
+
+    const app = await buildApp(await createConfig());
+    const responsePromise = app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        stream: true,
+        messages: [{ role: 'user', content: 'draw a cat' }]
+      }
+    });
+
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(15000);
+    await Promise.resolve();
+
+    let settled = false;
+    void responsePromise.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    const clearIntervalCallsBeforeCompletion = clearIntervalSpy.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(15000);
+    await Promise.resolve();
+    fetchDeferred.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({
+        data: [{ b64_json: Buffer.from('image-bytes').toString('base64') }]
+      }),
+      text: async () => ''
+    });
+    await Promise.resolve();
+
+    const response = await responsePromise;
+    expect(response.statusCode).toBe(200);
+    const heartbeatCount = (response.body.match(/: keep-alive\n\n/g) ?? []).length;
+    expect(heartbeatCount).toBeGreaterThanOrEqual(2);
+    expect(response.body).toContain('[DONE]');
+    expect(clearIntervalSpy.mock.calls.length).toBeGreaterThan(clearIntervalCallsBeforeCompletion);
+
+    await app.close();
+  }, 15000);
+
+
   it('emits a visible stream error and closes think on upstream timeout', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -229,6 +309,8 @@ describe('HTTP routes', () => {
   });
 
   it('routes chat with image input to upstream multipart edits', async () => {
+    const lookupSpy = vi.spyOn(dns, 'lookup') as unknown as { mockImplementation(fn: () => Promise<dns.LookupAddress[]>): unknown };
+    lookupSpy.mockImplementation(async () => [{ address: '93.184.216.34', family: 4 }]);
     const requestMock = vi.fn().mockResolvedValue({
       statusCode: 200,
       headers: { 'content-type': 'image/png' },
