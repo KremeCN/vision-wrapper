@@ -42,7 +42,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   await registerHealthRoute(app, config);
   await registerModelsRoute(app, config);
   await registerChatCompletionsRoute(app, config, openAiClient, fileStore);
-  await registerImagesRoutes(app, config, openAiClient);
+  await registerImagesRoutes(app, config, openAiClient, fileStore);
   await registerStaticFileRoutes(app, fileStore);
 
   return app;

@@ -3,12 +3,22 @@ import type { AppConfig } from '../config.js';
 import { BadRequestError, HttpError, UpstreamError } from '../http/errors.js';
 import { createRequestId, sendOpenAiError } from '../http/openaiResponses.js';
 import type { OpenAiClient } from '../openai/client.js';
+import type { LocalFileStore } from '../storage/localFileStore.js';
 
 type SupportedImageOperation = 'generations' | 'edits';
 
 type MultipartPart = {
   headers: Record<string, string>;
   body: Buffer;
+};
+
+type NativeImagesResponse = {
+  created?: number | undefined;
+  data?: Array<{
+    url?: string;
+    b64_json?: string;
+    revised_prompt?: string;
+  }>;
 };
 
 function isSupportedOperation(operation: string): operation is SupportedImageOperation {
@@ -177,10 +187,50 @@ function validateMultipartModel(rawBody: Buffer, contentType: string, expectedMo
   return null;
 }
 
+async function localizeImagesResponse(
+  upstreamBody: unknown,
+  model: string,
+  prompt: string,
+  fileStore: LocalFileStore
+): Promise<NativeImagesResponse> {
+  const response = upstreamBody as NativeImagesResponse;
+  const imageItems = response.data;
+  if (!Array.isArray(imageItems) || imageItems.length === 0) {
+    throw new UpstreamError(502, 'Upstream returned no image data', 'upstream_empty_response');
+  }
+
+  return {
+    created: response.created,
+    data: await Promise.all(imageItems.map(async (imageItem) => {
+      const storedImage = imageItem.b64_json
+        ? await fileStore.saveBase64Image(imageItem.b64_json, 'png', { model, prompt, producer: 'native_images' })
+        : imageItem.url
+          ? await fileStore.saveRemoteImage(imageItem.url, { model, prompt, producer: 'native_images' })
+          : (() => {
+              throw new UpstreamError(502, 'Upstream returned neither b64_json nor url', 'upstream_invalid_payload');
+            })();
+
+      return imageItem.revised_prompt
+        ? { url: storedImage.publicUrl, revised_prompt: imageItem.revised_prompt }
+        : { url: storedImage.publicUrl };
+    }))
+  };
+}
+
+function extractPrompt(body: unknown): string {
+  if (!body || typeof body !== 'object' || !('prompt' in body)) {
+    return '';
+  }
+
+  const prompt = (body as { prompt?: unknown }).prompt;
+  return typeof prompt === 'string' ? prompt : '';
+}
+
 export async function registerImagesRoutes(
   app: FastifyInstance,
   config: AppConfig,
-  openAiClient: OpenAiClient
+  openAiClient: OpenAiClient,
+  fileStore: LocalFileStore
 ): Promise<void> {
   app.post<{ Params: { operation: string }; Body: unknown }>('/v1/images/:operation', async (request, reply) => {
     const requestId = request.headers['x-request-id']?.toString() ?? createRequestId();
@@ -212,9 +262,16 @@ export async function registerImagesRoutes(
         contentType
       });
 
+      const localized = await localizeImagesResponse(
+        upstream.body,
+        expectedModel,
+        extractPrompt(request.body),
+        fileStore
+      );
+
       reply.code(upstream.statusCode);
-      reply.header('content-type', upstream.contentType);
-      reply.send(upstream.body);
+      reply.header('content-type', 'application/json; charset=utf-8');
+      reply.send(localized);
     } catch (error) {
       const mappedError = mapToHttpError(error);
       sendOpenAiError(reply, requestId, mappedError);
@@ -237,7 +294,7 @@ function mapToHttpError(error: unknown): HttpError {
     return new UpstreamError(502, message, 'upstream_network_error');
   }
 
-  if (message.includes('Upstream')) {
+  if (message.includes('Upstream') || message.includes('Failed to download upstream image')) {
     return new UpstreamError(502, message, 'upstream_error');
   }
 

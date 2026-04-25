@@ -361,6 +361,14 @@ describe('HTTP routes', () => {
     expect(upstreamForm.get('model')).toBe('gpt-image-2');
     expect(upstreamForm.get('prompt')).toBe('edit this image');
     expect(upstreamForm.get('image')).toBeInstanceOf(File);
+    const body = response.json();
+    expect(body.choices[0]?.message.content).toContain('/files/chat%2F');
+    const chatUrl = body.choices[0]?.message.content.match(/\((https?:[^)]+)\)/)?.[1];
+    expect(chatUrl).toBeTruthy();
+    const encodedFileId = chatUrl?.match(/\/files\/([^?)]+)/)?.[1];
+    expect(encodedFileId).toBeTruthy();
+    const fileResponse = await app.inject({ method: 'GET', url: `/files/${encodedFileId}` });
+    expect(fileResponse.statusCode).toBe(200);
     await app.close();
   });
 
@@ -466,7 +474,7 @@ describe('HTTP routes', () => {
       ok: true,
       status: 200,
       headers: { get: () => 'application/json; charset=utf-8' },
-      json: async () => ({ created: 1, data: [{ url: 'http://upstream.test/image.png' }] }),
+      json: async () => ({ created: 1, data: [{ b64_json: Buffer.from('generated-image').toString('base64') }] }),
       text: async () => ''
     }));
 
@@ -485,7 +493,10 @@ describe('HTTP routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().data[0].url).toBe('http://upstream.test/image.png');
+    expect(response.json().data[0].url).toContain('/files/native_images%2F');
+    const filePath = new URL(response.json().data[0].url).pathname;
+    const fileResponse = await app.inject({ method: 'GET', url: filePath });
+    expect(fileResponse.statusCode).toBe(200);
     await app.close();
   });
 
@@ -494,7 +505,7 @@ describe('HTTP routes', () => {
       ok: true,
       status: 200,
       headers: { get: () => 'application/json; charset=utf-8' },
-      json: async () => ({ created: 1, data: [{ url: 'http://upstream.test/edited.png' }] }),
+      json: async () => ({ created: 1, data: [{ b64_json: Buffer.from('edited-image').toString('base64') }] }),
       text: async () => ''
     }));
 
@@ -513,7 +524,7 @@ describe('HTTP routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().data[0].url).toBe('http://upstream.test/edited.png');
+    expect(response.json().data[0].url).toContain('/files/native_images%2F');
     await app.close();
   });
 
@@ -523,7 +534,7 @@ describe('HTTP routes', () => {
       ok: true,
       status: 200,
       headers: { get: () => 'application/json; charset=utf-8' },
-      json: async () => ({ created: 1, data: [{ url: 'http://upstream.test/edited-multipart.png' }] }),
+      json: async () => ({ created: 1, data: [{ b64_json: Buffer.from('edited-multipart-image').toString('base64') }] }),
       text: async () => ''
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -554,7 +565,7 @@ describe('HTTP routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().data[0].url).toBe('http://upstream.test/edited-multipart.png');
+    expect(response.json().data[0].url).toContain('/files/native_images%2F');
     const fetchCall = fetchMock.mock.calls[0];
     expect(fetchCall?.[1]?.body).toBeInstanceOf(Uint8Array);
     const upstreamBody = Buffer.from(fetchCall?.[1]?.body as Uint8Array).toString('utf8');
@@ -629,7 +640,7 @@ describe('HTTP routes', () => {
       ok: true,
       status: 200,
       headers: { get: () => 'application/json; charset=utf-8' },
-      json: async () => ({ created: 1, data: [{ url: 'http://upstream.test/edited-multipart-binary.png' }] }),
+      json: async () => ({ created: 1, data: [{ b64_json: Buffer.from('edited-binary-image').toString('base64') }] }),
       text: async () => ''
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -654,7 +665,7 @@ describe('HTTP routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().data[0].url).toBe('http://upstream.test/edited-multipart-binary.png');
+    expect(response.json().data[0].url).toContain('/files/native_images%2F');
     const fetchCall = fetchMock.mock.calls[0];
     expect(fetchCall?.[1]?.body).toBeInstanceOf(Uint8Array);
     await app.close();

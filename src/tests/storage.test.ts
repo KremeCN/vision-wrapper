@@ -30,7 +30,8 @@ describe('LocalFileStore', () => {
 
     const stored = await store.saveBase64Image(Buffer.from('hello').toString('base64'), 'png', {
       model: 'gpt-image-2',
-      prompt: 'draw a cat'
+      prompt: 'draw a cat',
+      producer: 'chat'
     });
     const file = await store.readFileById(stored.fileId);
     const metadata = await metadataStore.read(stored.fileId);
@@ -40,6 +41,35 @@ describe('LocalFileStore', () => {
     expect(file.mimeType).toBe('image/png');
     expect(metadata.model).toBe('gpt-image-2');
     expect(metadata.promptDigest).toBe(createPromptDigest('draw a cat'));
+  });
+
+  it('writes producer-prefixed paths for stored images', async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'vision-wrapper-producer-'));
+    tempDirs.push(rootDir);
+
+    const metadataStore = new FileMetadataStore({ rootDir });
+    const store = new LocalFileStore({
+      rootDir,
+      publicBaseUrl: 'https://example.com',
+      metadataStore,
+      remoteImageUrlPolicy: 'https_only'
+    });
+
+    const chatStored = await store.saveBase64Image(Buffer.from('chat-image').toString('base64'), 'png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    });
+    const nativeStored = await store.saveBase64Image(Buffer.from('native-image').toString('base64'), 'png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a dog',
+      producer: 'native_images'
+    });
+
+    expect(chatStored.fileId).toMatch(/^chat\//);
+    expect(chatStored.publicUrl).toContain('/files/chat%2F');
+    expect(nativeStored.fileId).toMatch(/^native_images\//);
+    expect(nativeStored.publicUrl).toContain('/files/native_images%2F');
   });
 
   it('rejects unsafe upstream remote image urls', async () => {
@@ -54,9 +84,11 @@ describe('LocalFileStore', () => {
       remoteImageUrlPolicy: 'http_and_https'
     });
 
-    await expect(store.saveRemoteImage('http://169.254.169.254/latest/meta-data')).rejects.toThrow(
-      'Upstream returned an unsafe image URL'
-    );
+    await expect(store.saveRemoteImage('http://169.254.169.254/latest/meta-data', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream returned an unsafe image URL');
   });
 
   it('rejects localhost upstream remote image urls', async () => {
@@ -71,7 +103,11 @@ describe('LocalFileStore', () => {
       remoteImageUrlPolicy: 'http_and_https'
     });
 
-    await expect(store.saveRemoteImage('http://localhost/image.png')).rejects.toThrow('Upstream returned an unsafe image URL');
+    await expect(store.saveRemoteImage('http://localhost/image.png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream returned an unsafe image URL');
   });
 
   it('rejects ipv6 loopback upstream remote image urls', async () => {
@@ -86,7 +122,11 @@ describe('LocalFileStore', () => {
       remoteImageUrlPolicy: 'http_and_https'
     });
 
-    await expect(store.saveRemoteImage('http://[::1]/image.png')).rejects.toThrow('Upstream returned an unsafe image URL');
+    await expect(store.saveRemoteImage('http://[::1]/image.png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream returned an unsafe image URL');
   });
 
   it('rejects ipv6 ula upstream remote image urls', async () => {
@@ -101,7 +141,11 @@ describe('LocalFileStore', () => {
       remoteImageUrlPolicy: 'http_and_https'
     });
 
-    await expect(store.saveRemoteImage('http://[fc00::1]/image.png')).rejects.toThrow('Upstream returned an unsafe image URL');
+    await expect(store.saveRemoteImage('http://[fc00::1]/image.png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream returned an unsafe image URL');
   });
 
   it('rejects ipv6 link-local upstream remote image urls', async () => {
@@ -116,7 +160,11 @@ describe('LocalFileStore', () => {
       remoteImageUrlPolicy: 'http_and_https'
     });
 
-    await expect(store.saveRemoteImage('http://[fe80::1]/image.png')).rejects.toThrow('Upstream returned an unsafe image URL');
+    await expect(store.saveRemoteImage('http://[fe80::1]/image.png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream returned an unsafe image URL');
   });
 
   it('rejects unspecified upstream remote image urls', async () => {
@@ -131,7 +179,11 @@ describe('LocalFileStore', () => {
       remoteImageUrlPolicy: 'http_and_https'
     });
 
-    await expect(store.saveRemoteImage('http://0.0.0.0/image.png')).rejects.toThrow('Upstream returned an unsafe image URL');
+    await expect(store.saveRemoteImage('http://0.0.0.0/image.png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream returned an unsafe image URL');
   });
 
   it('rejects non-http upstream remote image urls', async () => {
@@ -146,10 +198,23 @@ describe('LocalFileStore', () => {
       remoteImageUrlPolicy: 'http_and_https'
     });
 
-    await expect(store.saveRemoteImage('file:///tmp/image.png')).rejects.toThrow('Upstream returned an unsafe image URL');
-    await expect(store.saveRemoteImage('ftp://example.com/image.png')).rejects.toThrow('Upstream returned an unsafe image URL');
-    await expect(store.saveRemoteImage('data:text/plain,hello')).rejects.toThrow('Upstream returned an unsafe image URL');
+    await expect(store.saveRemoteImage('file:///tmp/image.png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream returned an unsafe image URL');
+    await expect(store.saveRemoteImage('ftp://example.com/image.png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream returned an unsafe image URL');
+    await expect(store.saveRemoteImage('data:text/plain,hello', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream returned an unsafe image URL');
   });
+
   it('rejects http upstream remote image urls when policy is https only', async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), 'vision-wrapper-http-policy-'));
     tempDirs.push(rootDir);
@@ -162,9 +227,11 @@ describe('LocalFileStore', () => {
       remoteImageUrlPolicy: 'https_only'
     });
 
-    await expect(store.saveRemoteImage('http://cdn.example.com/image.png')).rejects.toThrow(
-      'Upstream returned a non-public or non-https image URL'
-    );
+    await expect(store.saveRemoteImage('http://cdn.example.com/image.png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream returned a non-public or non-https image URL');
   });
 
   it('rejects upstream remote image urls when policy is disabled', async () => {
@@ -179,9 +246,11 @@ describe('LocalFileStore', () => {
       remoteImageUrlPolicy: 'disabled'
     });
 
-    await expect(store.saveRemoteImage('https://cdn.example.com/image.png')).rejects.toThrow(
-      'Upstream returned a remote image URL but remote image downloads are disabled'
-    );
+    await expect(store.saveRemoteImage('https://cdn.example.com/image.png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream returned a remote image URL but remote image downloads are disabled');
   });
 
   it('rejects hostnames whose dns answers include private addresses', async () => {
@@ -199,9 +268,11 @@ describe('LocalFileStore', () => {
     const lookupSpy = vi.spyOn(dns.promises, 'lookup') as unknown as { mockImplementation(fn: () => Promise<dns.LookupAddress[]>): unknown };
     lookupSpy.mockImplementation(async () => [{ address: '10.0.0.7', family: 4 }]);
 
-    await expect(store.saveRemoteImage('https://cdn.example.com/image.png')).rejects.toThrow(
-      'Upstream returned a non-public or non-https image URL'
-    );
+    await expect(store.saveRemoteImage('https://cdn.example.com/image.png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream returned a non-public or non-https image URL');
   });
 
   it('rejects non-image content-type from upstream remote image urls', async () => {
@@ -227,9 +298,11 @@ describe('LocalFileStore', () => {
     });
     setSafeRequestForTests(requestMock as never);
 
-    await expect(store.saveRemoteImage('https://cdn.example.com/image.png')).rejects.toThrow(
-      'Upstream image URL must return an image content-type (received text/html)'
-    );
+    await expect(store.saveRemoteImage('https://cdn.example.com/image.png', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    })).rejects.toThrow('Upstream image URL must return an image content-type (received text/html)');
   });
 
   it('downloads allowed upstream remote image urls', async () => {
@@ -257,7 +330,8 @@ describe('LocalFileStore', () => {
 
     const stored = await store.saveRemoteImage('https://cdn.example.com/image.png', {
       model: 'gpt-image-2',
-      prompt: 'draw a cat'
+      prompt: 'draw a cat',
+      producer: 'chat'
     });
 
     const file = await store.readFileById(stored.fileId);
@@ -278,7 +352,8 @@ describe('LocalFileStore', () => {
 
     const stored = await store.saveBase64Image(Buffer.from('hello').toString('base64'), 'png', {
       model: 'gpt-image-2',
-      prompt: 'draw a cat'
+      prompt: 'draw a cat',
+      producer: 'chat'
     });
 
     const metadataPath = metadataStore.getMetadataPath(stored.fileId);
@@ -290,4 +365,3 @@ describe('LocalFileStore', () => {
     expect(removed).toBe(1);
   });
 });
-

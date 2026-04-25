@@ -159,7 +159,7 @@ export async function registerChatCompletionsRoute(
         reply.raw.write(buildStreamProgressChunk(streamId, created, body.model, 'saving', config.streamProgressLanguage));
       }
 
-      const storeContext = { model: body.model, prompt };
+      const storeContext = { model: body.model, prompt, producer: 'chat' as const };
       const storedImage = imageData.b64_json
         ? await fileStore.saveBase64Image(imageData.b64_json, 'png', storeContext)
         : imageData.url

@@ -14,6 +14,14 @@ export type StoredImage = {
   mimeType: string;
 };
 
+export type StoredImageProducer = 'chat' | 'native_images';
+
+export type StoredImageContext = {
+  model: string;
+  prompt: string;
+  producer: StoredImageProducer;
+};
+
 type LocalFileStoreOptions = {
   rootDir: string;
   publicBaseUrl: string;
@@ -24,12 +32,12 @@ type LocalFileStoreOptions = {
 export class LocalFileStore {
   constructor(private readonly options: LocalFileStoreOptions) {}
 
-  async saveBase64Image(base64Payload: string, extension = 'png', context?: { model: string; prompt: string }): Promise<StoredImage> {
+  async saveBase64Image(base64Payload: string, extension = 'png', context: StoredImageContext): Promise<StoredImage> {
     const buffer = Buffer.from(base64Payload, 'base64');
     return this.saveBuffer(buffer, extension, undefined, 'b64', context);
   }
 
-  async saveRemoteImage(imageUrl: string, context?: { model: string; prompt: string }): Promise<StoredImage> {
+  async saveRemoteImage(imageUrl: string, context: StoredImageContext): Promise<StoredImage> {
     const safeUrl = await assertSafeUpstreamImageUrl(imageUrl, { policy: this.options.remoteImageUrlPolicy });
     const response = await safeDownload(safeUrl);
     if (!response.ok) {
@@ -57,12 +65,13 @@ export class LocalFileStore {
   private async saveBuffer(
     buffer: Buffer,
     extension: string,
-    explicitMimeType?: string,
-    upstreamSource: 'b64' | 'remote_url' = 'b64',
-    context?: { model: string; prompt: string }
+    explicitMimeType: string | undefined,
+    upstreamSource: 'b64' | 'remote_url',
+    context: StoredImageContext
   ): Promise<StoredImage> {
     const now = new Date();
     const relativeDir = path.join(
+      context.producer,
       String(now.getUTCFullYear()),
       String(now.getUTCMonth() + 1).padStart(2, '0'),
       String(now.getUTCDate()).padStart(2, '0')
@@ -78,17 +87,15 @@ export class LocalFileStore {
     const normalizedId = relativeFilePath.replaceAll('\\', '/');
     const mimeType = explicitMimeType ?? (lookupMime(fullPath) || 'application/octet-stream').toString();
 
-    if (context) {
-      await this.options.metadataStore.write({
-        fileId: normalizedId,
-        model: context.model,
-        createdAt: now.toISOString(),
-        mimeType,
-        sizeBytes: buffer.byteLength,
-        upstreamSource,
-        promptDigest: createPromptDigest(context.prompt)
-      });
-    }
+    await this.options.metadataStore.write({
+      fileId: normalizedId,
+      model: context.model,
+      createdAt: now.toISOString(),
+      mimeType,
+      sizeBytes: buffer.byteLength,
+      upstreamSource,
+      promptDigest: createPromptDigest(context.prompt)
+    });
 
     return {
       fileId: normalizedId,

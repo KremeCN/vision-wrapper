@@ -65,12 +65,14 @@ LOG_LEVEL=info
 - `/v1/chat/completions` accepts common OpenAI chat fields like `temperature`, `top_p`, `max_tokens`, `metadata`, and ignores them when they do not affect image generation.
 - Tool-related fields are explicitly rejected because this proxy only supports image requests.
 - The proxy exposes exactly one configured model alias via `IMAGE_MODEL_ALIASES`.
-- `/v1/images/generations` and `/v1/images/edits` are forwarded to the upstream OpenAI-compatible API.
+- `/v1/images/generations` and `/v1/images/edits` are forwarded to the upstream OpenAI-compatible API, then their generated images are stored locally.
 - Image endpoints accept only the single exposed model alias and reject other model names.
 - `stream=true` returns synthetic SSE chunks ending with `[DONE]`.
 - In `/v1/chat/completions`, requests with image input parts are converted to upstream `images/edits`; requests without image input use `images/generations`.
 - Chat image inputs support public remote image URLs and client-local images encoded as `data:image/...;base64,...`.
 - Server-local file paths such as `file:///...`, `/tmp/...`, or `C:\...` are not supported as chat image inputs.
+- Current built-in routes store chat completions outputs under `/files/chat/...` and native images outputs under `/files/native_images/...`.
+- `LocalFileStore` requires an explicit producer for stored images so new call sites cannot silently fall back to the chat prefix.
 - On stream failures, the proxy closes `</think>`, emits an `Error: ...` assistant message, then sends `[DONE]`.
 - Streaming responses now include progress text wrapped in `<think>...</think>` before the final markdown image URL.
 - `STREAM_PROGRESS_LANGUAGE` controls the progress text language inside `<think>` and supports `en` and `zh`.
