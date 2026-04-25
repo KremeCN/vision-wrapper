@@ -69,6 +69,8 @@ LOG_LEVEL=info
 - Image endpoints accept only the single exposed model alias and reject other model names.
 - `stream=true` returns synthetic SSE chunks ending with `[DONE]`.
 - In `/v1/chat/completions`, requests with image input parts are converted to upstream `images/edits`; requests without image input use `images/generations`.
+- Chat image inputs support public remote image URLs and client-local images encoded as `data:image/...;base64,...`.
+- Server-local file paths such as `file:///...`, `/tmp/...`, or `C:\...` are not supported as chat image inputs.
 - On stream failures, the proxy closes `</think>`, emits an `Error: ...` assistant message, then sends `[DONE]`.
 - Streaming responses now include progress text wrapped in `<think>...</think>` before the final markdown image URL.
 - `STREAM_PROGRESS_LANGUAGE` controls the progress text language inside `<think>` and supports `en` and `zh`.

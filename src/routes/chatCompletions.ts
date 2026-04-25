@@ -148,7 +148,7 @@ export async function registerChatCompletionsRoute(
       }
 
       const imageResponse = imageInput
-        ? await openAiClient.editImage(await buildImageEditsForm(body, prompt, imageInput.imageUrl, config.remoteImageUrlPolicy))
+        ? await openAiClient.editImage(await buildImageEditsForm(body, prompt, imageInput, config.remoteImageUrlPolicy))
         : await openAiClient.generateImage(buildImageRequest(body, prompt));
       const imageData = imageResponse.data[0];
       if (!imageData) {
@@ -228,6 +228,10 @@ function mapToHttpError(error: unknown): HttpError {
 
   if (message.includes('Only n=1')) {
     return new BadRequestError(message, 'unsupported_n', 'n');
+  }
+
+  if (message.includes('Image input data URL')) {
+    return new BadRequestError(message, 'invalid_image_input', 'messages');
   }
 
   if (message.includes('timed out')) {

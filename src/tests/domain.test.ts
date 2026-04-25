@@ -89,7 +89,7 @@ describe('buildImageEditsForm', () => {
       size: '1024x1024',
       quality: 'high',
       background: 'transparent'
-    }, 'prompt', 'https://example.com/input.png', 'https_only');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'https://example.com/input.png' }, 'https_only');
 
     expect(formData.get('model')).toBe('gpt-image-2');
     expect(formData.get('prompt')).toBe('prompt');
@@ -101,75 +101,123 @@ describe('buildImageEditsForm', () => {
     resetSafeRequestForTests();
   });
 
+  it('builds multipart image file from inline data url', async () => {
+    const { formData } = await buildImageEditsForm({
+      model: 'gpt-image-2',
+      messages: []
+    }, 'prompt', { kind: 'inline_data_url', dataUrl: 'data:image/png;base64,aGVsbG8=' }, 'disabled');
+
+    const image = formData.get('image');
+    expect(image).toBeInstanceOf(File);
+    expect((image as File).type).toBe('image/png');
+    expect((image as File).name).toBe('image.png');
+  });
+
+  it('rejects non-image inline data urls', async () => {
+    await expect(buildImageEditsForm({
+      model: 'gpt-image-2',
+      messages: []
+    }, 'prompt', { kind: 'inline_data_url', dataUrl: 'data:text/plain;base64,aGVsbG8=' }, 'disabled')).rejects.toThrow(
+      'Image input data URL must use an image content-type'
+    );
+  });
+
+  it('rejects non-base64 inline data urls', async () => {
+    await expect(buildImageEditsForm({
+      model: 'gpt-image-2',
+      messages: []
+    }, 'prompt', { kind: 'inline_data_url', dataUrl: 'data:image/png,hello' }, 'disabled')).rejects.toThrow(
+      'Image input data URL must be a valid base64 data URL'
+    );
+  });
+
+  it('rejects invalid base64 inline data urls', async () => {
+    await expect(buildImageEditsForm({
+      model: 'gpt-image-2',
+      messages: []
+    }, 'prompt', { kind: 'inline_data_url', dataUrl: 'data:image/png;base64,@@@' }, 'disabled')).rejects.toThrow(
+      'Image input data URL must be a valid base64 data URL'
+    );
+  });
+
+  it('rejects empty inline data urls', async () => {
+    await expect(buildImageEditsForm({
+      model: 'gpt-image-2',
+      messages: []
+    }, 'prompt', { kind: 'inline_data_url', dataUrl: 'data:image/png;base64,' }, 'disabled')).rejects.toThrow(
+      'Image input data URL is empty'
+    );
+  });
+
   it('rejects localhost image input urls', async () => {
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'http://127.0.0.1/input.png', 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'http://127.0.0.1/input.png' }, 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
   });
 
   it('rejects localhost hostname image input urls', async () => {
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'http://localhost/input.png', 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'http://localhost/input.png' }, 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
   });
 
   it('rejects ipv6 loopback image input urls', async () => {
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'http://[::1]/input.png', 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'http://[::1]/input.png' }, 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
   });
 
   it('rejects ipv6 ula image input urls', async () => {
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'http://[fc00::1]/input.png', 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'http://[fc00::1]/input.png' }, 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
   });
 
   it('rejects ipv6 link-local image input urls', async () => {
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'http://[fe80::1]/input.png', 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'http://[fe80::1]/input.png' }, 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
   });
 
   it('rejects unspecified ipv4 image input urls', async () => {
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'http://0.0.0.0/input.png', 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'http://0.0.0.0/input.png' }, 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
   });
 
   it('rejects non-http image input urls', async () => {
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'file:///tmp/input.png', 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'file:///tmp/input.png' }, 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'ftp://example.com/input.png', 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'ftp://example.com/input.png' }, 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'data:text/plain,hello', 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'data:text/plain,hello' }, 'http_and_https')).rejects.toThrow('Image input URL must be a public http/https address');
   });
 
   it('rejects http image input urls when policy is https only', async () => {
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'http://example.com/input.png', 'https_only')).rejects.toThrow('Image input URL must be a public https address');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'http://example.com/input.png' }, 'https_only')).rejects.toThrow('Image input URL must be a public https address');
   });
 
   it('rejects all remote image input urls when policy is disabled', async () => {
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'https://example.com/input.png', 'disabled')).rejects.toThrow('Remote image URLs are disabled');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'https://example.com/input.png' }, 'disabled')).rejects.toThrow('Remote image URLs are disabled');
   });
 
   it('rejects hostnames that resolve to private addresses', async () => {
@@ -178,7 +226,7 @@ describe('buildImageEditsForm', () => {
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'https://evil.example/input.png', 'https_only')).rejects.toThrow('Image input URL must be a public https address');
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'https://evil.example/input.png' }, 'https_only')).rejects.toThrow('Image input URL must be a public https address');
   });
 
   it('rejects non-image content-type from image input urls', async () => {
@@ -196,7 +244,7 @@ describe('buildImageEditsForm', () => {
     await expect(buildImageEditsForm({
       model: 'gpt-image-2',
       messages: []
-    }, 'prompt', 'https://example.com/input.png', 'https_only')).rejects.toThrow(
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'https://example.com/input.png' }, 'https_only')).rejects.toThrow(
       'Image input URL must return an image content-type (received text/html)'
     );
     resetSafeRequestForTests();
@@ -216,7 +264,37 @@ describe('extractImageInput', () => {
           ]
         }
       ]
-    })?.imageUrl).toBe('https://example.com/input.png');
+    })).toEqual({ kind: 'remote_url', imageUrl: 'https://example.com/input.png' });
+  });
+
+  it('extracts inline data url image input', () => {
+    expect(extractImageInput({
+      model: 'gpt-image-2',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'edit this image' },
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } }
+          ]
+        }
+      ]
+    })).toEqual({ kind: 'inline_data_url', dataUrl: 'data:image/png;base64,aGVsbG8=' });
+  });
+
+  it('extracts inline data url image input case-insensitively', () => {
+    expect(extractImageInput({
+      model: 'gpt-image-2',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'edit this image' },
+            { type: 'image_url', image_url: { url: 'DATA:IMAGE/png;base64,aGVsbG8=' } }
+          ]
+        }
+      ]
+    })).toEqual({ kind: 'inline_data_url', dataUrl: 'DATA:IMAGE/png;base64,aGVsbG8=' });
   });
 });
 

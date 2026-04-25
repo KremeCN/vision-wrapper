@@ -364,6 +364,76 @@ describe('HTTP routes', () => {
     await app.close();
   });
 
+  it('routes chat with inline data url image input to upstream multipart edits', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({ data: [{ b64_json: Buffer.from('image-bytes').toString('base64') }] }),
+      text: async () => ''
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const app = await buildApp(await createConfig({ remoteImageUrlPolicy: 'disabled' }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'edit this image' },
+              { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    const upstreamCall = fetchMock.mock.calls[0];
+    expect(upstreamCall?.[0]).toContain('/images/edits');
+    const upstreamOptions = upstreamCall?.[1] as RequestInit | undefined;
+    expect(upstreamOptions?.body).toBeInstanceOf(FormData);
+    expect((upstreamOptions?.body as FormData).get('image')).toBeInstanceOf(File);
+    await app.close();
+  });
+
+  it('rejects invalid inline data url image input at HTTP layer', async () => {
+    const app = await buildApp(await createConfig({ remoteImageUrlPolicy: 'disabled' }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'gpt-image-2',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'edit this image' },
+              { type: 'image_url', image_url: { url: 'data:image/png,hello' } }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('invalid_image_input');
+    await app.close();
+  });
+
+
   it('rejects chat image input with unsafe remote url at HTTP layer', async () => {
     const app = await buildApp(await createConfig());
     const response = await app.inject({
@@ -391,7 +461,6 @@ describe('HTTP routes', () => {
     expect(response.json().error.code).toBe('unsafe_image_url');
     await app.close();
   });
-
   it('passes through /v1/images/generations to upstream', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -419,6 +488,7 @@ describe('HTTP routes', () => {
     expect(response.json().data[0].url).toBe('http://upstream.test/image.png');
     await app.close();
   });
+
   it('passes through /v1/images/edits to upstream', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -446,6 +516,7 @@ describe('HTTP routes', () => {
     expect(response.json().data[0].url).toBe('http://upstream.test/edited.png');
     await app.close();
   });
+
 
   it('passes through multipart /v1/images/edits to upstream', async () => {
     const fetchMock = vi.fn().mockResolvedValue({

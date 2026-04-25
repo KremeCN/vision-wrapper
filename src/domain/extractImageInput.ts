@@ -1,8 +1,16 @@
 import type { ChatCompletionsRequest, ChatMessageContentPart } from '../openai/chatSchemas.js';
 
-type ExtractedImageInput = {
-  imageUrl: string;
-};
+const INLINE_DATA_URL_PREFIX_PATTERN = /^data:image\//i;
+
+export type ExtractedImageInput =
+  | {
+      kind: 'remote_url';
+      imageUrl: string;
+    }
+  | {
+      kind: 'inline_data_url';
+      dataUrl: string;
+    };
 
 function getImageUrlFromPart(part: ChatMessageContentPart): string | null {
   if (part.type !== 'image_url') {
@@ -41,9 +49,13 @@ export function extractImageInput(request: ChatCompletionsRequest): ExtractedIma
         continue;
       }
       const imageUrl = getImageUrlFromPart(part);
-      if (imageUrl) {
-        return { imageUrl };
+      if (!imageUrl) {
+        continue;
       }
+      if (INLINE_DATA_URL_PREFIX_PATTERN.test(imageUrl)) {
+        return { kind: 'inline_data_url', dataUrl: imageUrl };
+      }
+      return { kind: 'remote_url', imageUrl };
     }
   }
 
