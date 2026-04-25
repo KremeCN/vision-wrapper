@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { promises as dns } from 'node:dns';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -6,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetSafeRequestForTests, setSafeRequestForTests } from '../../security/safeFetch.js';
 import { buildApp } from '../../app.js';
 import type { AppConfig } from '../../config.js';
+import { createPromptDigest } from '../../storage/fileMetadataStore.js';
+
 
 function createDeferred<T>(): {
   promise: Promise<T>;
@@ -19,6 +22,50 @@ function createDeferred<T>(): {
     reject = nextReject;
   });
   return { promise, resolve, reject };
+}
+
+function extractMultipartFilePart(body: Buffer, boundary: string): { headers: string; content: Buffer } {
+  const startMarker = Buffer.from(`--${boundary}\r\n`, 'utf8');
+  const nextMarker = Buffer.from(`\r\n--${boundary}`, 'utf8');
+  let cursor = body.indexOf(startMarker);
+
+  while (cursor !== -1) {
+    const headerStart = cursor + startMarker.length;
+    const headerEnd = body.indexOf(Buffer.from('\r\n\r\n', 'utf8'), headerStart);
+    if (headerEnd === -1) {
+      break;
+    }
+
+    const headers = body.subarray(headerStart, headerEnd).toString('utf8');
+    const contentStart = headerEnd + 4;
+    const contentEnd = body.indexOf(nextMarker, contentStart);
+    if (contentEnd === -1) {
+      break;
+    }
+
+    if (headers.includes('name="image"')) {
+      return {
+        headers,
+        content: body.subarray(contentStart, contentEnd)
+      };
+    }
+
+    cursor = body.indexOf(startMarker, contentEnd + 2);
+  }
+
+  throw new Error('Multipart image part not found');
+}
+
+function isPngSignature(buffer: Buffer): boolean {
+  return buffer.length >= 8
+    && buffer[0] === 0x89
+    && buffer[1] === 0x50
+    && buffer[2] === 0x4e
+    && buffer[3] === 0x47
+    && buffer[4] === 0x0d
+    && buffer[5] === 0x0a
+    && buffer[6] === 0x1a
+    && buffer[7] === 0x0a;
 }
 
 describe('HTTP routes', () => {
@@ -57,6 +104,7 @@ describe('HTTP routes', () => {
       streamProgressLanguage: 'en',
       logLevel: 'silent',
       remoteImageUrlPolicy: 'https_only',
+      nativeImagesConvertInputToPng: false,
       ...overrides
     };
   }
@@ -573,6 +621,52 @@ describe('HTTP routes', () => {
     await app.close();
   });
 
+  it('stores multipart /v1/images/edits prompt digest from the prompt field', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({ created: 1, data: [{ b64_json: Buffer.from('edited-multipart-image').toString('base64') }] }),
+      text: async () => ''
+    }));
+
+    const config = await createConfig();
+    const app = await buildApp(config);
+    const boundary = '----visionwrapperpromptdigest';
+    const multipartPrompt = 'edit multipart image prompt';
+    const multipart = [
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="model"',
+      '',
+      'gpt-image-2',
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="prompt"',
+      '',
+      multipartPrompt,
+      `--${boundary}--`,
+      ''
+    ].join('\r\n');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/edits',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': `multipart/form-data; boundary=${boundary}`
+      },
+      payload: multipart
+    });
+
+    expect(response.statusCode).toBe(200);
+    const encodedFileId = response.json().data[0].url.match(/\/files\/([^?)]+)/)?.[1];
+    expect(encodedFileId).toBeTruthy();
+    const metadataPath = path.join(config.imageStorageDir, '.meta', `${decodeURIComponent(encodedFileId as string).replaceAll('/', path.sep)}.json`);
+    const metadataContent = await (await import('node:fs/promises')).readFile(metadataPath, 'utf8');
+    const metadata = JSON.parse(metadataContent) as { promptDigest: string };
+    expect(metadata.promptDigest).toBe(createPromptDigest(multipartPrompt));
+    await app.close();
+  });
+
   it('rejects multipart /v1/images/edits when model field is missing', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -604,6 +698,7 @@ describe('HTTP routes', () => {
     await app.close();
   });
 
+
   it('rejects multipart /v1/images/edits when multipart body cannot be reliably parsed', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -632,6 +727,155 @@ describe('HTTP routes', () => {
     expect(response.statusCode).toBe(400);
     expect(response.json().error.code).toBe('invalid_multipart_model');
     expect(fetchMock).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('converts non-png multipart image inputs to png when enabled', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({ created: 1, data: [{ b64_json: Buffer.from('edited-converted-image').toString('base64') }] }),
+      text: async () => ''
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const app = await buildApp(await createConfig({ nativeImagesConvertInputToPng: true }));
+    const boundary = '----visionwrapperconvertjpeg';
+    const sourcePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=', 'base64');
+    const jpegPayload = await sharp(sourcePng).jpeg().toBuffer();
+    const multipart = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="input.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`, 'utf8'),
+      jpegPayload,
+      Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\ngpt-image-2\r\n--${boundary}--\r\n`, 'utf8')
+    ]);
+
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/edits',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': `multipart/form-data; boundary=${boundary}`
+      },
+      payload: multipart
+    });
+
+    expect(response.statusCode).toBe(200);
+    const fetchCall = fetchMock.mock.calls[0];
+    expect(fetchCall?.[1]?.body).toBeInstanceOf(Uint8Array);
+    const upstreamBody = Buffer.from(fetchCall?.[1]?.body as Uint8Array);
+    const imagePart = extractMultipartFilePart(upstreamBody, boundary);
+    expect(imagePart.headers.toLowerCase()).toContain('content-type: image/png');
+    expect(imagePart.headers).toContain('filename="input.png"');
+    expect(isPngSignature(imagePart.content)).toBe(true);
+    await app.close();
+  });
+
+  it('leaves png multipart image inputs unchanged when enabled', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({ created: 1, data: [{ b64_json: Buffer.from('edited-png-image').toString('base64') }] }),
+      text: async () => ''
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const app = await buildApp(await createConfig({ nativeImagesConvertInputToPng: true }));
+    const boundary = '----visionwrapperpngnoop';
+    const pngPayload = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=', 'base64');
+    const multipart = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="input.png"\r\nContent-Type: image/png\r\n\r\n`, 'utf8'),
+      pngPayload,
+      Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\ngpt-image-2\r\n--${boundary}--\r\n`, 'utf8')
+    ]);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/edits',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': `multipart/form-data; boundary=${boundary}`
+      },
+      payload: multipart
+    });
+
+    expect(response.statusCode).toBe(200);
+    const fetchCall = fetchMock.mock.calls[0];
+    const upstreamBody = Buffer.from(fetchCall?.[1]?.body as Uint8Array);
+    const imagePart = extractMultipartFilePart(upstreamBody, boundary);
+    expect(imagePart.headers.toLowerCase()).toContain('content-type: image/png');
+    expect(imagePart.headers).toContain('filename="input.png"');
+    expect(imagePart.content.equals(pngPayload)).toBe(true);
+    await app.close();
+  });
+
+  it('returns 400 for invalid multipart image input when png conversion is enabled', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const app = await buildApp(await createConfig({ nativeImagesConvertInputToPng: true }));
+    const boundary = '----visionwrapperinvalidimage';
+    const invalidPayload = Buffer.from('not-a-real-image', 'utf8');
+    const multipart = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="input.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`, 'utf8'),
+      invalidPayload,
+      Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\ngpt-image-2\r\n--${boundary}--\r\n`, 'utf8')
+    ]);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/edits',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': `multipart/form-data; boundary=${boundary}`
+      },
+      payload: multipart
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('invalid_image_input');
+    expect(fetchMock).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('passes through non-png multipart image inputs unchanged when conversion is disabled', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({ created: 1, data: [{ b64_json: Buffer.from('edited-jpeg-image').toString('base64') }] }),
+      text: async () => ''
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const app = await buildApp(await createConfig({ nativeImagesConvertInputToPng: false }));
+    const boundary = '----visionwrapperdisabledconvert';
+    const jpegPayload = Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAA==', 'base64');
+    const multipart = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="input.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`, 'utf8'),
+      jpegPayload,
+      Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\ngpt-image-2\r\n--${boundary}--\r\n`, 'utf8')
+    ]);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/edits',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': `multipart/form-data; boundary=${boundary}`
+      },
+      payload: multipart
+    });
+
+    expect(response.statusCode).toBe(200);
+    const fetchCall = fetchMock.mock.calls[0];
+    const upstreamBody = Buffer.from(fetchCall?.[1]?.body as Uint8Array);
+    const imagePart = extractMultipartFilePart(upstreamBody, boundary);
+    expect(imagePart.headers).toContain('Content-Type: image/jpeg');
+    expect(imagePart.headers).toContain('filename="input.jpg"');
+    expect(imagePart.content.equals(jpegPayload)).toBe(true);
     await app.close();
   });
 

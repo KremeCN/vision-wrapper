@@ -20,6 +20,7 @@
     "@fastify/rate-limit": "^10.3.0",
     "fastify": "^5.3.3",
     "mime-types": "^2.1.35",
+    "sharp": "^0.34.2",
     "undici": "^7.25.0",
     "zod": "^3.24.4"
   },

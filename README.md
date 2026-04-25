@@ -51,6 +51,7 @@ CORS_ALLOW_ORIGIN=*
 FILE_TTL_HOURS=168
 STREAM_PROGRESS_LANGUAGE=en
 REMOTE_IMAGE_URL_POLICY=https_only
+NATIVE_IMAGES_CONVERT_INPUT_TO_PNG=false
 LOG_LEVEL=info
 ```
 
@@ -81,6 +82,7 @@ LOG_LEVEL=info
   - `https_only` — allow only public HTTPS URLs (default)
   - `http_and_https` — allow public HTTP and HTTPS URLs
   - `disabled` — reject all remote image URLs
+- `NATIVE_IMAGES_CONVERT_INPUT_TO_PNG` controls whether multipart `/v1/images/edits` uploads are normalized to PNG before upstream forwarding (default `false`).
 - Generated images are stored under `IMAGE_STORAGE_DIR`.
 - File metadata is written under `IMAGE_STORAGE_DIR/.meta`.
 

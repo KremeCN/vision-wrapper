@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const remoteImageUrlPolicySchema = z.enum(['https_only', 'http_and_https', 'disabled']);
+const booleanStringSchema = z.enum(['true', 'false']).transform((value) => value === 'true');
 
 const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
@@ -20,6 +21,7 @@ const envSchema = z.object({
   FILE_TTL_HOURS: z.coerce.number().int().positive().default(168),
   STREAM_PROGRESS_LANGUAGE: z.enum(['en', 'zh']).default('en'),
   REMOTE_IMAGE_URL_POLICY: remoteImageUrlPolicySchema.default('https_only'),
+  NATIVE_IMAGES_CONVERT_INPUT_TO_PNG: booleanStringSchema.default('false'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info')
 });
 
@@ -43,6 +45,7 @@ export type AppConfig = {
   fileTtlHours: number;
   streamProgressLanguage: 'en' | 'zh';
   remoteImageUrlPolicy: RemoteImageUrlPolicy;
+  nativeImagesConvertInputToPng: boolean;
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent';
 };
 
@@ -92,6 +95,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     fileTtlHours: parsed.FILE_TTL_HOURS,
     streamProgressLanguage: parsed.STREAM_PROGRESS_LANGUAGE,
     remoteImageUrlPolicy: parsed.REMOTE_IMAGE_URL_POLICY,
+    nativeImagesConvertInputToPng: parsed.NATIVE_IMAGES_CONVERT_INPUT_TO_PNG,
     logLevel: parsed.LOG_LEVEL
   };
 }
