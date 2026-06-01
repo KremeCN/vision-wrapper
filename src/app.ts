@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppConfig } from './config.js';
-import { OpenAiClient } from './openai/client.js';
+import { OpenAiClientRouter } from './openai/clientRouter.js';
 import { registerCors } from './plugins/cors.js';
 import { registerHealthRoute } from './routes/health.js';
 import { registerChatCompletionsRoute } from './routes/chatCompletions.js';
@@ -26,7 +26,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     done(null, body);
   });
 
-  const openAiClient = new OpenAiClient(config.upstreamBaseUrl, config.upstreamApiKey, config.requestTimeoutMs);
+  const openAiClients = new OpenAiClientRouter(config.imageModelRoutes, config.requestTimeoutMs);
   const metadataStore = new FileMetadataStore({ rootDir: config.imageStorageDir });
   const fileStore = new LocalFileStore({
     rootDir: config.imageStorageDir,
@@ -41,8 +41,8 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   app.addHook('preHandler', createAuthPreHandler(config));
   await registerHealthRoute(app, config);
   await registerModelsRoute(app, config);
-  await registerChatCompletionsRoute(app, config, openAiClient, fileStore);
-  await registerImagesRoutes(app, config, openAiClient, fileStore);
+  await registerChatCompletionsRoute(app, config, openAiClients, fileStore);
+  await registerImagesRoutes(app, config, openAiClients, fileStore);
   await registerStaticFileRoutes(app, fileStore);
 
   return app;

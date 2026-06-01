@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { AppConfig } from '../config.js';
 import { BadRequestError, HttpError, UpstreamError } from '../http/errors.js';
 import { createRequestId, sendOpenAiError } from '../http/openaiResponses.js';
-import type { OpenAiClient } from '../openai/client.js';
+import type { OpenAiClientRouter } from '../openai/clientRouter.js';
 import type { LocalFileStore } from '../storage/localFileStore.js';
 
 type SupportedImageOperation = 'generations' | 'edits';
@@ -26,29 +26,17 @@ function isSupportedOperation(operation: string): operation is SupportedImageOpe
   return operation === 'generations' || operation === 'edits';
 }
 
-function getSingleModelAlias(config: AppConfig): string {
-  return Array.from(config.imageModelAliases)[0] as string;
-}
-
-function validateModelAlias(body: unknown, expectedModel: string): HttpError | null {
+function extractModelAlias(body: unknown): { model: string } | { error: HttpError } {
   if (!body || typeof body !== 'object' || !('model' in body)) {
-    return null;
+    return { error: new BadRequestError('Request body must include a model field', 'invalid_model', 'model') };
   }
 
   const model = (body as { model?: unknown }).model;
   if (typeof model !== 'string' || model.trim().length === 0) {
-    return new BadRequestError('Model must be a non-empty string', 'invalid_model', 'model');
+    return { error: new BadRequestError('Model must be a non-empty string', 'invalid_model', 'model') };
   }
 
-  if (model !== expectedModel) {
-    return new BadRequestError(
-      `This proxy only exposes '${expectedModel}' for image endpoints`,
-      'unsupported_model',
-      'model'
-    );
-  }
-
-  return null;
+  return { model };
 }
 
 function parseMultipartBoundary(contentType: string): string | null {
@@ -179,26 +167,18 @@ function extractMultipartPrompt(rawBody: Buffer, contentType: string): string {
   return parseMultipartField(rawBody, boundary, 'prompt') ?? '';
 }
 
-function validateMultipartModel(rawBody: Buffer, contentType: string, expectedModel: string): HttpError | null {
+function extractMultipartModelAlias(rawBody: Buffer, contentType: string): { model: string } | { error: HttpError } {
   const boundary = parseMultipartBoundary(contentType);
   if (!boundary) {
-    return new BadRequestError('Missing multipart boundary', 'invalid_multipart_boundary', 'model');
+    return { error: new BadRequestError('Missing multipart boundary', 'invalid_multipart_boundary', 'model') };
   }
 
   const model = parseMultipartModel(rawBody, boundary);
   if (!model) {
-    return new BadRequestError('Multipart form-data must include a valid model field', 'invalid_multipart_model', 'model');
+    return { error: new BadRequestError('Multipart form-data must include a valid model field', 'invalid_multipart_model', 'model') };
   }
 
-  if (model !== expectedModel) {
-    return new BadRequestError(
-      `This proxy only exposes '${expectedModel}' for image endpoints`,
-      'unsupported_model',
-      'model'
-    );
-  }
-
-  return null;
+  return { model };
 }
 
 
@@ -375,10 +355,49 @@ function extractPrompt(body: unknown): string {
   return typeof prompt === 'string' ? prompt : '';
 }
 
+function rewriteJsonModelAlias(body: unknown, upstreamModel: string): unknown {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return body;
+  }
+
+  return {
+    ...body,
+    model: upstreamModel
+  };
+}
+
+function rewriteMultipartModelAlias(rawBody: Buffer, contentType: string, model: string, upstreamModel: string): Buffer {
+  if (model === upstreamModel) {
+    return rawBody;
+  }
+
+  const boundary = parseMultipartBoundary(contentType);
+  if (!boundary) {
+    throw new BadRequestError('Missing multipart boundary', 'invalid_multipart_boundary', 'model');
+  }
+
+  const parts = parseMultipartParts(rawBody, boundary);
+  if (parts.length === 0) {
+    return rawBody;
+  }
+
+  return serializeMultipartBody(parts.map((part) => {
+    const disposition = part.headers['content-disposition'];
+    if (!disposition || parseContentDispositionName(disposition) !== 'model') {
+      return part;
+    }
+
+    return {
+      ...part,
+      body: Buffer.from(upstreamModel, 'utf8')
+    };
+  }), boundary);
+}
+
 export async function registerImagesRoutes(
   app: FastifyInstance,
   config: AppConfig,
-  openAiClient: OpenAiClient,
+  openAiClients: OpenAiClientRouter,
   fileStore: LocalFileStore
 ): Promise<void> {
   app.post<{ Params: { operation: string }; Body: unknown }>('/v1/images/:operation', async (request, reply) => {
@@ -391,26 +410,40 @@ export async function registerImagesRoutes(
       return;
     }
 
-    const expectedModel = getSingleModelAlias(config);
     const contentType = request.headers['content-type']?.toString();
     const isMultipart = Boolean(contentType?.toLowerCase().includes('multipart/form-data'));
     const multipartBody = isMultipart ? (request.body as Buffer) : null;
 
-    const modelError = isMultipart
-      ? validateMultipartModel(multipartBody ?? Buffer.alloc(0), contentType as string, expectedModel)
-      : validateModelAlias(request.body, expectedModel);
+    const modelResult = isMultipart
+      ? extractMultipartModelAlias(multipartBody ?? Buffer.alloc(0), contentType as string)
+      : extractModelAlias(request.body);
 
-    if (modelError) {
-      sendOpenAiError(reply, requestId, modelError);
+    if ('error' in modelResult) {
+      sendOpenAiError(reply, requestId, modelResult.error);
+      return;
+    }
+
+    if (!config.imageModelAliases.has(modelResult.model)) {
+      sendOpenAiError(
+        reply,
+        requestId,
+        new BadRequestError('This proxy only supports configured image models for image endpoints', 'unsupported_model', 'model')
+      );
       return;
     }
 
     try {
-      const upstreamBody = isMultipart && operation === 'edits' && config.nativeImagesConvertInputToPng
-        ? await normalizeMultipartEditsBodyToPng(multipartBody ?? Buffer.alloc(0), contentType as string)
-        : isMultipart
-          ? multipartBody ?? Buffer.alloc(0)
-          : request.body;
+      const { client: openAiClient, route } = openAiClients.get(modelResult.model);
+      const upstreamBody = isMultipart
+        ? rewriteMultipartModelAlias(
+            operation === 'edits' && config.nativeImagesConvertInputToPng
+              ? await normalizeMultipartEditsBodyToPng(multipartBody ?? Buffer.alloc(0), contentType as string)
+              : multipartBody ?? Buffer.alloc(0),
+            contentType as string,
+            modelResult.model,
+            route.upstreamModel
+          )
+        : rewriteJsonModelAlias(request.body, route.upstreamModel);
 
       const upstream = await openAiClient.forwardImagesRequest(operation, {
         body: upstreamBody,
@@ -423,7 +456,7 @@ export async function registerImagesRoutes(
 
       const localized = await localizeImagesResponse(
         upstream.body,
-        expectedModel,
+        modelResult.model,
         prompt,
         fileStore
       );

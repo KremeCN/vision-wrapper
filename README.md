@@ -41,6 +41,8 @@ UPSTREAM_BASE_URL=http://your-upstream-openai-compatible-host/v1
 UPSTREAM_API_KEY=
 PROXY_API_KEYS=dev-proxy-key
 IMAGE_MODEL_ALIASES=gpt-image-2
+# Optional multi-upstream routing. When set, this overrides IMAGE_MODEL_ALIASES for exposed models.
+# IMAGE_MODEL_ROUTES_JSON=[{"model":"gpt-image-2","upstreamBaseUrl":"https://api-a.example.com/v1","upstreamApiKey":"key-a"},{"model":"flux-image","upstreamBaseUrl":"https://api-b.example.com/v1","upstreamApiKey":"key-b","upstreamModel":"provider-model-name"}]
 IMAGE_STORAGE_DIR=data/images
 REQUEST_TIMEOUT_MS=300000
 BODY_LIMIT_BYTES=20971520
@@ -61,13 +63,16 @@ LOG_LEVEL=info
 - `UPSTREAM_BASE_URL` must already end with `/v1`.
 - The proxy appends `images/generations` to `UPSTREAM_BASE_URL`.
 - `UPSTREAM_API_KEY` is the bearer token sent to the upstream provider.
+- `IMAGE_MODEL_ALIASES` can expose one or more comma-separated model aliases against the legacy single upstream.
+- `IMAGE_MODEL_ROUTES_JSON` optionally defines per-model upstream routing and overrides `IMAGE_MODEL_ALIASES` for exposed models.
+- Each `IMAGE_MODEL_ROUTES_JSON` item requires `model`, `upstreamBaseUrl`, and `upstreamApiKey`; optional `upstreamModel` rewrites the model name sent upstream.
+- All upstream base URLs must end with `/v1`.
 - `CORS_ALLOW_ORIGIN` controls `Access-Control-Allow-Origin`.
-- `/v1/models` and `/v1/models/:id` return the configured `IMAGE_MODEL_ALIASES`.
+- `/v1/models` and `/v1/models/:id` return the configured model aliases.
 - `/v1/chat/completions` accepts common OpenAI chat fields like `temperature`, `top_p`, `max_tokens`, `metadata`, and ignores them when they do not affect image generation.
 - Tool-related fields are explicitly rejected because this proxy only supports image requests.
-- The proxy exposes exactly one configured model alias via `IMAGE_MODEL_ALIASES`.
-- `/v1/images/generations` and `/v1/images/edits` are forwarded to the upstream OpenAI-compatible API, then their generated images are stored locally.
-- Image endpoints accept only the single exposed model alias and reject other model names.
+- `/v1/images/generations` and `/v1/images/edits` are routed by their `model` field to the configured upstream, then their generated images are stored locally.
+- Image endpoints accept configured model aliases and reject other model names.
 - `stream=true` returns synthetic SSE chunks ending with `[DONE]`.
 - In `/v1/chat/completions`, requests with image input parts are converted to upstream `images/edits`; requests without image input use `images/generations`.
 - Chat image inputs support public remote image URLs and client-local images encoded as `data:image/...;base64,...`.
@@ -87,6 +92,16 @@ LOG_LEVEL=info
 - File metadata is written under `IMAGE_STORAGE_DIR/.meta`.
 
 ## Request examples
+
+### Multi-upstream routing
+
+Set `IMAGE_MODEL_ROUTES_JSON` when different exposed model names should use different upstream API hosts or API keys:
+
+```env
+IMAGE_MODEL_ROUTES_JSON=[{"model":"gpt-image-2","upstreamBaseUrl":"https://api-a.example.com/v1","upstreamApiKey":"key-a"},{"model":"flux-image","upstreamBaseUrl":"https://api-b.example.com/v1","upstreamApiKey":"key-b","upstreamModel":"provider-model-name"}]
+```
+
+With this example, client requests using `model: "flux-image"` are sent to `https://api-b.example.com/v1/images/...` with bearer token `key-b`, while the upstream payload model is rewritten to `provider-model-name`.
 
 ### List models
 

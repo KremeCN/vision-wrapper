@@ -19,7 +19,7 @@ import { extractPrompt } from '../domain/extractPrompt.js';
 import { BadRequestError, HttpError, UpstreamError } from '../http/errors.js';
 import { createRequestId, sendOpenAiError } from '../http/openaiResponses.js';
 import { chatCompletionsRequestSchema, type ChatCompletionsRequest } from '../openai/chatSchemas.js';
-import type { OpenAiClient } from '../openai/client.js';
+import type { OpenAiClientRouter } from '../openai/clientRouter.js';
 import type { LocalFileStore } from '../storage/localFileStore.js';
 import { createChatCompletionId } from '../utils/id.js';
 import { unixTimestampSeconds } from '../utils/time.js';
@@ -29,7 +29,7 @@ const STREAM_HEARTBEAT_INTERVAL_MS = 15000;
 export async function registerChatCompletionsRoute(
   app: FastifyInstance,
   config: AppConfig,
-  openAiClient: OpenAiClient,
+  openAiClients: OpenAiClientRouter,
   fileStore: LocalFileStore
 ): Promise<void> {
   app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (request, reply) => {
@@ -131,6 +131,7 @@ export async function registerChatCompletionsRoute(
     try {
       const prompt = extractPrompt(body, config.maxPromptChars);
       const imageInput = extractImageInput(body);
+      const { client: openAiClient, route } = openAiClients.get(body.model);
 
       if (body.stream && streamId && created) {
         bindStreamCleanup();
@@ -148,8 +149,8 @@ export async function registerChatCompletionsRoute(
       }
 
       const imageResponse = imageInput
-        ? await openAiClient.editImage(await buildImageEditsForm(body, prompt, imageInput, config.remoteImageUrlPolicy))
-        : await openAiClient.generateImage(buildImageRequest(body, prompt));
+        ? await openAiClient.editImage(await buildImageEditsForm(body, prompt, imageInput, config.remoteImageUrlPolicy, route.upstreamModel))
+        : await openAiClient.generateImage(buildImageRequest(body, prompt, route.upstreamModel));
       const imageData = imageResponse.data[0];
       if (!imageData) {
         throw new UpstreamError(502, 'Upstream returned no image data', 'upstream_empty_response');

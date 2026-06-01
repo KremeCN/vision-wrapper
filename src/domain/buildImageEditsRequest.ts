@@ -15,14 +15,15 @@ export async function buildImageEditsForm(
   request: ChatCompletionsRequest,
   prompt: string,
   imageInput: ExtractedImageInput,
-  remoteImageUrlPolicy: RemoteImageUrlPolicy
+  remoteImageUrlPolicy: RemoteImageUrlPolicy,
+  upstreamModel = request.model
 ): Promise<BuiltImageEditsForm> {
   if (request.n !== undefined && request.n !== 1) {
     throw new Error('Only n=1 is supported');
   }
 
   const formData = new FormData();
-  formData.set('model', request.model);
+  formData.set('model', upstreamModel);
   formData.set('prompt', prompt);
   formData.set('image', await imageInputToFile(imageInput, remoteImageUrlPolicy));
 

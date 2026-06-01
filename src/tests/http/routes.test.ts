@@ -93,6 +93,12 @@ describe('HTTP routes', () => {
       upstreamApiKey: 'upstream-token',
       proxyApiKeys: new Set(['test-token']),
       imageModelAliases: new Set(['gpt-image-2']),
+      imageModelRoutes: new Map([['gpt-image-2', {
+        model: 'gpt-image-2',
+        upstreamBaseUrl: 'http://upstream.test/v1',
+        upstreamApiKey: 'upstream-token',
+        upstreamModel: 'gpt-image-2'
+      }]]),
       imageStorageDir,
       requestTimeoutMs: 1000,
       bodyLimitBytes: 20 * 1024 * 1024,
@@ -999,6 +1005,110 @@ describe('HTTP routes', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json().error.code).toBe('unsupported_model');
+    await app.close();
+  });
+
+  it('routes chat requests by model alias and rewrites upstream model', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({ data: [{ b64_json: Buffer.from('image-bytes').toString('base64') }] }),
+      text: async () => ''
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const imageModelRoutes = new Map([
+      ['gpt-image-2', {
+        model: 'gpt-image-2',
+        upstreamBaseUrl: 'http://upstream-a.test/v1',
+        upstreamApiKey: 'token-a',
+        upstreamModel: 'provider-a-model'
+      }],
+      ['flux-image', {
+        model: 'flux-image',
+        upstreamBaseUrl: 'http://upstream-b.test/v1',
+        upstreamApiKey: 'token-b',
+        upstreamModel: 'provider-b-model'
+      }]
+    ]);
+    const app = await buildApp(await createConfig({
+      imageModelAliases: new Set(imageModelRoutes.keys()),
+      imageModelRoutes
+    }));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'flux-image',
+        messages: [{ role: 'user', content: 'draw a cat' }]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://upstream-b.test/v1/images/generations');
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toEqual({
+      'content-type': 'application/json',
+      authorization: 'Bearer token-b'
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string).model).toBe('provider-b-model');
+    await app.close();
+  });
+
+  it('routes native image requests by model alias and rewrites upstream model', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json; charset=utf-8' },
+      json: async () => ({ created: 1, data: [{ b64_json: Buffer.from('generated-image').toString('base64') }] }),
+      text: async () => ''
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const imageModelRoutes = new Map([
+      ['gpt-image-2', {
+        model: 'gpt-image-2',
+        upstreamBaseUrl: 'http://upstream-a.test/v1',
+        upstreamApiKey: 'token-a',
+        upstreamModel: 'provider-a-model'
+      }],
+      ['flux-image', {
+        model: 'flux-image',
+        upstreamBaseUrl: 'http://upstream-b.test/v1',
+        upstreamApiKey: 'token-b',
+        upstreamModel: 'provider-b-model'
+      }]
+    ]);
+    const app = await buildApp(await createConfig({
+      imageModelAliases: new Set(imageModelRoutes.keys()),
+      imageModelRoutes
+    }));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/images/generations',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json'
+      },
+      payload: {
+        model: 'flux-image',
+        prompt: 'draw a cat'
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://upstream-b.test/v1/images/generations');
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toEqual({
+      'content-type': 'application/json',
+      authorization: 'Bearer token-b'
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string).model).toBe('provider-b-model');
     await app.close();
   });
 
