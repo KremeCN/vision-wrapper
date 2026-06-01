@@ -2,6 +2,10 @@
 
 A TypeScript + Fastify proxy that accepts OpenAI-compatible `/v1/chat/completions` requests for configured image models, rewrites them to an upstream OpenAI-compatible Images API, stores generated images locally, and returns markdown image URLs in a chat-completions-compatible response.
 
+## License
+
+MIT. See [LICENSE](LICENSE).
+
 ## Quick start
 
 1. Copy `.env.example` to `.env`

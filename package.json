@@ -2,6 +2,7 @@
   "name": "vision-wrapper",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22.0.0"
