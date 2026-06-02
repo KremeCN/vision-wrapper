@@ -4,6 +4,7 @@ import type { ExtractedImageInput } from './extractImageInput.js';
 import type { ChatCompletionsRequest } from '../openai/chatSchemas.js';
 import { safeDownload } from '../security/safeFetch.js';
 import { assertSafeClientImageUrl } from '../security/safeExternalUrl.js';
+import { detectImageMimeType } from '../utils/imageMime.js';
 
 type BuiltImageEditsForm = {
   formData: FormData;
@@ -59,12 +60,17 @@ async function remoteImageUrlToFile(imageUrl: string, remoteImageUrlPolicy: Remo
     throw new Error(`Failed to download upstream image input (${response.status})`);
   }
 
-  const contentType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
-  if (!contentType.toLowerCase().startsWith('image/')) {
-    throw new Error(`Image input URL must return an image content-type (received ${contentType})`);
+  const responseContentType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
+  const bytes = await response.arrayBuffer();
+  const detectedImage = detectImageMimeType(new Uint8Array(bytes));
+
+  if (!responseContentType.toLowerCase().startsWith('image/') && !detectedImage) {
+    throw new Error(`Image input URL must return image content or a decodable image file (received ${responseContentType})`);
   }
 
-  const bytes = await response.arrayBuffer();
+  const contentType = responseContentType.toLowerCase().startsWith('image/')
+    ? responseContentType
+    : detectedImage?.mimeType ?? 'image/png';
   return new File([bytes], inferFilename(safeUrl.url, contentType), { type: contentType });
 }
 

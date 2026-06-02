@@ -245,8 +245,31 @@ describe('buildImageEditsForm', () => {
       model: 'gpt-image-2',
       messages: []
     }, 'prompt', { kind: 'remote_url', imageUrl: 'https://example.com/input.png' }, 'https_only')).rejects.toThrow(
-      'Image input URL must return an image content-type (received text/html)'
+      'Image input URL must return image content or a decodable image file (received text/html)'
     );
+    resetSafeRequestForTests();
+  });
+
+  it('accepts octet-stream image input urls when bytes are an image', async () => {
+    const lookupSpy = vi.spyOn(dns.promises, 'lookup') as unknown as { mockImplementation(fn: () => Promise<dns.LookupAddress[]>): unknown };
+    lookupSpy.mockImplementation(async () => [{ address: '93.184.216.34', family: 4 }]);
+    const requestMock = vi.fn().mockResolvedValue({
+      statusCode: 200,
+      headers: { 'content-type': 'application/octet-stream' },
+      body: {
+        arrayBuffer: async () => Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=', 'base64')
+      }
+    });
+    setSafeRequestForTests(requestMock as never);
+
+    const { formData } = await buildImageEditsForm({
+      model: 'gpt-image-2',
+      messages: []
+    }, 'prompt', { kind: 'remote_url', imageUrl: 'https://example.com/input.bin' }, 'https_only');
+
+    const image = formData.get('image');
+    expect(image).toBeInstanceOf(File);
+    expect((image as File).type).toBe('image/png');
     resetSafeRequestForTests();
   });
 });

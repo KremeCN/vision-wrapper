@@ -302,7 +302,43 @@ describe('LocalFileStore', () => {
       model: 'gpt-image-2',
       prompt: 'draw a cat',
       producer: 'chat'
-    })).rejects.toThrow('Upstream image URL must return an image content-type (received text/html)');
+    })).rejects.toThrow('Upstream image URL must return image content or a decodable image file (received text/html)');
+  });
+
+  it('accepts octet-stream upstream remote image urls when bytes are an image', async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'vision-wrapper-octet-image-'));
+    tempDirs.push(rootDir);
+
+    const metadataStore = new FileMetadataStore({ rootDir });
+    const store = new LocalFileStore({
+      rootDir,
+      publicBaseUrl: 'https://example.com',
+      metadataStore,
+      remoteImageUrlPolicy: 'https_only'
+    });
+
+    const lookupSpy = vi.spyOn(dns.promises, 'lookup') as unknown as { mockImplementation(fn: () => Promise<dns.LookupAddress[]>): unknown };
+    lookupSpy.mockImplementation(async () => [{ address: '93.184.216.34', family: 4 }]);
+    const pngPayload = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=', 'base64');
+    const requestMock = vi.fn().mockResolvedValue({
+      statusCode: 200,
+      headers: { 'content-type': 'application/octet-stream' },
+      body: {
+        arrayBuffer: async () => pngPayload
+      }
+    });
+    setSafeRequestForTests(requestMock as never);
+
+    const stored = await store.saveRemoteImage('https://cdn.example.com/image.bin', {
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      producer: 'chat'
+    });
+
+    const file = await store.readFileById(stored.fileId);
+    expect(stored.fileId).toMatch(/\.png$/);
+    expect(stored.mimeType).toBe('image/png');
+    expect(file.buffer.equals(pngPayload)).toBe(true);
   });
 
   it('downloads allowed upstream remote image urls', async () => {

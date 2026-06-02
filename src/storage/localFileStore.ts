@@ -5,6 +5,7 @@ import type { RemoteImageUrlPolicy } from '../config.js';
 import { safeDownload } from '../security/safeFetch.js';
 import { assertSafeUpstreamImageUrl } from '../security/safeExternalUrl.js';
 import { createFileId } from '../utils/id.js';
+import { detectImageMimeType } from '../utils/imageMime.js';
 import { createPromptDigest, type FileMetadataStore } from './fileMetadataStore.js';
 
 export type StoredImage = {
@@ -44,14 +45,20 @@ export class LocalFileStore {
       throw new Error(`Failed to download upstream image: ${response.status}`);
     }
 
-    const mimeType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
-    if (!mimeType.toLowerCase().startsWith('image/')) {
-      throw new Error(`Upstream image URL must return an image content-type (received ${mimeType})`);
+    const responseMimeType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const detectedImage = detectImageMimeType(buffer);
+
+    if (!responseMimeType.toLowerCase().startsWith('image/') && !detectedImage) {
+      throw new Error(`Upstream image URL must return image content or a decodable image file (received ${responseMimeType})`);
     }
 
-    const extension = mimeType.split('/')[1] ?? 'png';
-    const arrayBuffer = await response.arrayBuffer();
-    return this.saveBuffer(Buffer.from(arrayBuffer), extension, mimeType, 'remote_url', context);
+    const mimeType = responseMimeType.toLowerCase().startsWith('image/')
+      ? responseMimeType
+      : detectedImage?.mimeType ?? 'image/png';
+    const extension = detectedImage?.extension ?? mimeType.split('/')[1] ?? 'png';
+    return this.saveBuffer(buffer, extension, mimeType, 'remote_url', context);
   }
 
   async readFileById(fileId: string): Promise<{ filePath: string; buffer: Buffer; mimeType: string }> {
